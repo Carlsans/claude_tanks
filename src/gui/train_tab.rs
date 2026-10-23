@@ -254,6 +254,24 @@ impl TrainTab {
                         );
                     });
                 }
+                Method::Es => {
+                    ui.collapsing("ES parameters", |ui| {
+                        let e = &mut c.es;
+                        ui.add(
+                            egui::Slider::new(&mut e.sigma, 0.001..=0.3)
+                                .logarithmic(true)
+                                .text("noise sigma"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut e.lr, 1e-4..=0.1)
+                                .logarithmic(true)
+                                .text("learning rate"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut e.weight_decay, 0.0..=0.05).text("weight decay"),
+                        );
+                    });
+                }
                 Method::Neat => {
                     ui.collapsing("NEAT parameters", |ui| {
                         let n = &mut c.neat;

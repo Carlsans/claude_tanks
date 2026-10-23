@@ -1,8 +1,10 @@
 //! Training runs on a background thread; the GUI talks to it through channels.
 
 pub mod benchmark;
+pub mod es;
 pub mod eval;
 pub mod ga;
+pub mod imitation;
 pub mod neat_evo;
 pub mod ppo;
 
@@ -21,15 +23,17 @@ pub const PROMOTE_WIN_RATE: f32 = 0.55;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Method {
     Ga,
+    Es,
     Neat,
     Ppo,
 }
 
 impl Method {
-    pub const ALL: [Method; 3] = [Method::Ga, Method::Neat, Method::Ppo];
+    pub const ALL: [Method; 4] = [Method::Ga, Method::Es, Method::Neat, Method::Ppo];
     pub fn name(self) -> &'static str {
         match self {
             Method::Ga => "GA",
+            Method::Es => "ES",
             Method::Neat => "NEAT",
             Method::Ppo => "PPO",
         }
@@ -37,7 +41,7 @@ impl Method {
     /// Architectures this method can train.
     pub fn supports(self, arch: Arch) -> bool {
         match self {
-            Method::Ga => arch != Arch::Neat,
+            Method::Ga | Method::Es => arch != Arch::Neat,
             Method::Neat => arch == Arch::Neat,
             Method::Ppo => arch != Arch::Neat,
         }
@@ -68,7 +72,10 @@ pub struct TrainConfig {
     pub shaping_gens: u32,
     /// Matches vs the scripted bot used to score the champion each generation.
     pub eval_matches: usize,
+    /// Warm start fixed-topology nets by imitating the scripted bot.
+    pub imitation: imitation::ImitationParams,
     pub ga: ga::GaParams,
+    pub es: es::EsParams,
     pub neat: neat_evo::NeatParams,
     pub ppo: ppo::PpoParams,
 }
@@ -92,7 +99,9 @@ impl Default for TrainConfig {
             shaping_end: 0.15,
             shaping_gens: 300,
             eval_matches: 48,
+            imitation: imitation::ImitationParams::default(),
             ga: ga::GaParams::default(),
+            es: es::EsParams::default(),
             neat: neat_evo::NeatParams::default(),
             ppo: ppo::PpoParams::default(),
         }
@@ -187,21 +196,24 @@ pub struct StepEnv<'a> {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum Trainer {
     Ga(ga::Ga),
+    Es(es::Es),
     Neat(neat_evo::Neat),
     Ppo(Box<ppo::Ppo>),
 }
 
 impl Trainer {
-    fn new(cfg: &TrainConfig, rng: &mut Rng) -> Trainer {
+    fn new(cfg: &TrainConfig, rng: &mut Rng, init: Option<Vec<f32>>) -> Trainer {
         match cfg.method {
-            Method::Ga => Trainer::Ga(ga::Ga::new(cfg, rng)),
+            Method::Ga => Trainer::Ga(ga::Ga::new(cfg, rng, init)),
+            Method::Es => Trainer::Es(es::Es::new(cfg, rng, init)),
             Method::Neat => Trainer::Neat(neat_evo::Neat::new(cfg, rng)),
-            Method::Ppo => Trainer::Ppo(Box::new(ppo::Ppo::new(cfg, rng))),
+            Method::Ppo => Trainer::Ppo(Box::new(ppo::Ppo::new(cfg, rng, init))),
         }
     }
     fn step(&mut self, env: StepEnv) -> StepReport {
         match self {
             Trainer::Ga(t) => t.step(env),
+            Trainer::Es(t) => t.step(env),
             Trainer::Neat(t) => t.step(env),
             Trainer::Ppo(t) => t.step(env),
         }
@@ -367,7 +379,13 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         }
         None => {
             let mut rng = Rng::new(cfg.seed);
-            let trainer = Trainer::new(&cfg, &mut rng);
+            let init = (cfg.imitation.enabled && cfg.arch != Arch::Neat).then(|| {
+                let _ = tx.send(Msg::Log("Imitation warm start...".into()));
+                imitation::pretrain_cached(cfg.arch, &cfg.imitation, &mut rng, &|l| {
+                    let _ = tx.send(Msg::Log(l));
+                })
+            });
+            let trainer = Trainer::new(&cfg, &mut rng, init);
             let _ = tx.send(Msg::Log(format!(
                 "Started {} ({} / {}, {} params)",
                 cfg.run_name,

@@ -307,3 +307,12 @@ pub fn seq_backward(
         _ => unreachable!("cache does not match layout"),
     }
 }
+
+/// Hidden state after the last step of a cached sequence (empty for MLPs).
+pub fn last_hidden(cache: &SeqCache) -> Vec<f32> {
+    match cache {
+        SeqCache::Mlp(_) => Vec::new(),
+        SeqCache::Elman(c) => c.last().map(|s| s.1.clone()).unwrap_or_default(),
+        SeqCache::Gru(c) => c.last().map(|s| s.h.clone()).unwrap_or_default(),
+    }
+}

@@ -33,12 +33,16 @@ pub struct Ga {
 }
 
 impl Ga {
-    pub fn new(cfg: &TrainConfig, rng: &mut Rng) -> Ga {
-        Ga {
-            pop: (0..cfg.population.max(2))
-                .map(|_| fixed::init_params(cfg.arch, rng))
-                .collect(),
-        }
+    /// Random population, or mutated copies of `init` (the first copy unchanged).
+    pub fn new(cfg: &TrainConfig, rng: &mut Rng, init: Option<Vec<f32>>) -> Ga {
+        let pop = (0..cfg.population.max(2))
+            .map(|i| match &init {
+                Some(p) if i == 0 => p.clone(),
+                Some(p) => p.iter().map(|v| v + rng.gauss() * cfg.ga.sigma).collect(),
+                None => fixed::init_params(cfg.arch, rng),
+            })
+            .collect();
+        Ga { pop }
     }
 
     pub fn step(&mut self, env: StepEnv) -> StepReport {

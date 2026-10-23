@@ -118,12 +118,22 @@ fn value_of(vp: &[f32], layers: &[(usize, usize, usize, usize)], x: &[f32]) -> f
 }
 
 impl Ppo {
-    pub fn new(cfg: &TrainConfig, rng: &mut Rng) -> Ppo {
-        let mut policy = init_params(cfg.arch, rng);
-        // Small output layer so initial actions are near zero.
-        let (layout, _) = Layout::new(cfg.arch);
-        scale_output(&layout, &mut policy, 0.1);
-        policy.extend(std::iter::repeat_n(cfg.ppo.init_log_std, N_OUT));
+    pub fn new(cfg: &TrainConfig, rng: &mut Rng, init: Option<Vec<f32>>) -> Ppo {
+        let pretrained = init.is_some();
+        let mut policy = init.unwrap_or_else(|| {
+            let mut p = init_params(cfg.arch, rng);
+            // Small output layer so initial actions are near zero.
+            let (layout, _) = Layout::new(cfg.arch);
+            scale_output(&layout, &mut p, 0.1);
+            p
+        });
+        // A pretrained policy starts with less exploration noise.
+        let log_std = if pretrained {
+            cfg.ppo.init_log_std - 1.0
+        } else {
+            cfg.ppo.init_log_std
+        };
+        policy.extend(std::iter::repeat_n(log_std, N_OUT));
         let (vl, vn) = Layout::mlp(&VALUE_DIMS);
         let mut value = vec![0.0; vn];
         if let Layout::Mlp(layers) = &vl {
