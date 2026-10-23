@@ -54,7 +54,7 @@ impl Es {
             .collect();
         let theta = &self.theta;
         let member = |i: usize| -> Vec<f32> {
-            let (e, sign) = (&noise[i / 2], if i % 2 == 0 { 1.0 } else { -1.0 });
+            let (e, sign) = (&noise[i / 2], if i.is_multiple_of(2) { 1.0 } else { -1.0 });
             theta
                 .iter()
                 .zip(e)
