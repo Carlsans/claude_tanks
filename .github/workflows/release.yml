@@ -11,10 +11,13 @@ jobs:
         include:
           - os: ubuntu-latest
             bin: claude_tanks
-            asset: claude_tanks-linux-x86_64
+            asset: claude_tanks-linux-x86_64.tar.gz
+          - os: ubuntu-24.04-arm
+            bin: claude_tanks
+            asset: claude_tanks-linux-aarch64-rpi5.tar.gz
           - os: windows-latest
             bin: claude_tanks.exe
-            asset: claude_tanks-windows-x86_64.exe
+            asset: claude_tanks-windows-x86_64.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,8 +26,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
       - run: cargo build --release
-      - shell: bash
-        run: cp target/release/${{ matrix.bin }} ${{ matrix.asset }}
+      - name: Package binary with champion models
+        shell: bash
+        run: |
+          mkdir -p pkg/claude_tanks/models
+          cp target/release/${{ matrix.bin }} README.md LICENSE pkg/claude_tanks/
+          if [ -d models/champions ]; then cp -r models/champions pkg/claude_tanks/models/; fi
+          if [ -d results ]; then cp -r results pkg/claude_tanks/; fi
+          cd pkg
+          if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../${{ matrix.asset }} claude_tanks; else tar czf ../${{ matrix.asset }} claude_tanks; fi
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset }}
