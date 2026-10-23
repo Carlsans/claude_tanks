@@ -59,6 +59,26 @@ impl eframe::App for App {
 }
 
 /// PPO hyper-parameter widgets (shared by the Train and Benchmark tabs).
-pub fn ppo_params_ui(ui: &mut egui::Ui, _p: &mut crate::train::ppo::PpoParams) {
-    ui.label("(PPO not implemented yet)");
+pub fn ppo_params_ui(ui: &mut egui::Ui, p: &mut crate::train::ppo::PpoParams) {
+    ui.add(
+        egui::Slider::new(&mut p.lr, 1e-5..=1e-2)
+            .logarithmic(true)
+            .text("policy lr"),
+    );
+    ui.add(
+        egui::Slider::new(&mut p.vf_lr, 1e-5..=1e-2)
+            .logarithmic(true)
+            .text("value lr"),
+    );
+    ui.add(egui::Slider::new(&mut p.epochs, 1..=16).text("epochs"));
+    ui.add(
+        egui::Slider::new(&mut p.minibatch, 256..=16384)
+            .logarithmic(true)
+            .text("minibatch samples"),
+    );
+    ui.add(egui::Slider::new(&mut p.clip, 0.05..=0.5).text("clip"));
+    ui.add(egui::Slider::new(&mut p.gamma, 0.9..=0.999).text("gamma"));
+    ui.add(egui::Slider::new(&mut p.lambda, 0.8..=1.0).text("GAE lambda"));
+    ui.add(egui::Slider::new(&mut p.ent_coef, 0.0..=0.05).text("entropy coef"));
+    ui.add(egui::Slider::new(&mut p.chunk, 4..=128).text("BPTT chunk"));
 }

@@ -1,4 +1,5 @@
 //! Headless training: `cargo run --release --example train_cli -- <arch> <method> <generations>`
+//! [key=value ...] where key is a TrainConfig path, e.g. `ppo.lr=0.001 population=32 density=[0,0.5]`.
 //! arch: mlp_s | mlp_l | elman | gru | neat, method: ga | neat | ppo
 use claude_tanks::nn::Arch;
 use claude_tanks::train::{Method, Msg, TrainConfig, spawn};
@@ -21,6 +22,19 @@ fn main() {
         max_generations: gens,
         ..Default::default()
     };
+    // Apply key=value overrides through the serde representation.
+    let mut v = serde_json::to_value(&cfg).unwrap();
+    for kv in args.iter().skip(4) {
+        let (k, val) = kv.split_once('=').expect("key=value");
+        let mut node = &mut v;
+        for part in k.split('.') {
+            node = node
+                .get_mut(part)
+                .unwrap_or_else(|| panic!("unknown key {k}"));
+        }
+        *node = serde_json::from_str(val).unwrap_or(serde_json::Value::String(val.into()));
+    }
+    let cfg: TrainConfig = serde_json::from_value(v).expect("config");
     let h = spawn(cfg, None);
     for m in h.msg.iter() {
         match m {

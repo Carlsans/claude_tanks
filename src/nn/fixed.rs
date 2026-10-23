@@ -81,6 +81,21 @@ impl Layout {
         (layout, n)
     }
 
+    /// Generic dense stack (used for the PPO value network).
+    pub fn mlp(dims: &[usize]) -> (Layout, usize) {
+        let mut n = 0;
+        let layers = dims
+            .windows(2)
+            .map(|d| {
+                let w = n;
+                let b = w + d[0] * d[1];
+                n = b + d[1];
+                (d[0], d[1], w, b)
+            })
+            .collect();
+        (Layout::Mlp(layers), n)
+    }
+
     pub fn hidden(&self) -> usize {
         match self {
             Layout::Mlp(_) => 0,

@@ -38,7 +38,7 @@ impl Method {
         match self {
             Method::Ga => arch != Arch::Neat,
             Method::Neat => arch == Arch::Neat,
-            Method::Ppo => matches!(arch, Arch::MlpS | Arch::MlpL | Arch::Gru),
+            Method::Ppo => arch != Arch::Neat,
         }
     }
 }

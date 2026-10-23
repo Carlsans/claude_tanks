@@ -1,6 +1,7 @@
 //! Neural pilots: architectures, inference, and saved models.
 
 pub mod fixed;
+pub mod grad;
 pub mod neat;
 
 use crate::sim::world::{Action, Controller};
