@@ -1,7 +1,7 @@
 //! Small deterministic PRNG (xoshiro256++), so matches and training are reproducible
 //! across platforms without depending on an external crate's stream stability.
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Rng {
     s: [u64; 4],
 }

@@ -5,7 +5,12 @@ use crate::rng::Rng;
 use crate::sim::world::Controller;
 use crate::sim::{Action, MAX_SPEED, RADAR_HALF_ANGLE, SHELL_SPEED, wrap_angle};
 
+/// Curriculum levels, from harmless to the full bot.
+pub const LEVELS: [&str; 4] = ["sitting duck", "wanderer", "rookie", "veteran"];
+pub const MAX_LEVEL: u8 = 3;
+
 pub struct ScriptedBot {
+    level: u8,
     rng: Rng,
     seed: u64,
     wander: f32,
@@ -14,8 +19,14 @@ pub struct ScriptedBot {
 }
 
 impl ScriptedBot {
+    /// Full-strength bot.
     pub fn new(seed: u64) -> Self {
+        Self::with_level(seed, MAX_LEVEL)
+    }
+
+    pub fn with_level(seed: u64, level: u8) -> Self {
         ScriptedBot {
+            level: level.min(MAX_LEVEL),
             rng: Rng::new(seed),
             seed,
             wander: 0.0,
@@ -66,7 +77,21 @@ impl Controller for ScriptedBot {
             turret = (last_vs_turret * 3.0).clamp(-1.0, 1.0);
         }
         let clear_shot = o[32] > o[17] - 0.01;
-        let fire = seen && aim_err.abs() < 0.04 && clear_shot && o[6] <= 0.0;
+        let fire = match self.level {
+            0 | 1 => false,
+            // Rookie: sloppy aim and slow trigger.
+            2 => seen && aim_err.abs() < 0.25 && o[6] <= 0.0 && self.rng.chance(0.15),
+            _ => seen && aim_err.abs() < 0.04 && clear_shot && o[6] <= 0.0,
+        };
+        if self.level == 2 {
+            turret *= 0.4;
+        }
+        if self.level == 0 {
+            return Action {
+                radar: 1.0,
+                ..Action::default()
+            };
+        }
 
         // Movement: wander, avoid walls, back off when stuck.
         let front = o[8];

@@ -143,6 +143,7 @@ fn shells_stop_at_walls() {
         pos: Vec2::new(500.0, 100.0),
         vel: Vec2::new(0.0, -SHELL_SPEED),
         owner: 0,
+        closest: f32::MAX,
     });
     for _ in 0..30 {
         w.step([idle(), idle()]);

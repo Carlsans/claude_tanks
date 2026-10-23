@@ -31,12 +31,17 @@ impl Action {
 pub struct TankStats {
     pub shots: u32,
     pub hits: u32,
-    /// Integral over time of cos(turret error) while the enemy is on radar.
+    /// Integral over time of max(0, cos(turret error))^4 (true bearing, walls ignored).
     pub aim: f32,
     /// Seconds the enemy was inside the radar beam.
     pub radar_time: f32,
     pub distance: f32,
+    /// Sum over finished shots of closeness (1 = hit, 0 = never within NEAR_MISS of the enemy).
+    pub near: f32,
 }
+
+/// Distance under which a passing shell still earns some aiming credit.
+pub const NEAR_MISS: f32 = 150.0;
 
 #[derive(Clone, Debug)]
 pub struct Tank {
@@ -92,6 +97,8 @@ pub struct Shell {
     pub pos: Vec2,
     pub vel: Vec2,
     pub owner: usize,
+    /// Closest distance to the enemy so far.
+    pub closest: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -246,6 +253,7 @@ impl World {
                 pos,
                 vel: d * SHELL_SPEED,
                 owner: i,
+                closest: f32::MAX,
             });
             self.events.push(Event::Fire { tank: i, pos });
         }
@@ -275,6 +283,8 @@ impl World {
             let s = self.shells[i];
             let step = SHELL_SPEED * DT;
             let dir = s.vel * (1.0 / SHELL_SPEED);
+            let enemy = &self.tanks[1 - s.owner];
+            let closest = s.closest.min(segment_dist(s.pos, dir, step, enemy.pos));
             let wall_t = self.terrain.ray(s.pos, dir, step);
             let mut tank_hit: Option<(usize, f32)> = None;
             for (k, t) in self.tanks.iter().enumerate() {
@@ -291,18 +301,21 @@ impl World {
             if let Some((k, th)) = tank_hit {
                 kills[k] = true;
                 self.tanks[s.owner].stats.hits += 1;
+                self.tanks[s.owner].stats.near += 1.0;
                 self.events.push(Event::TankHit {
                     tank: k,
                     pos: s.pos + dir * th,
                 });
                 self.shells.swap_remove(i);
             } else if wall_t < step {
+                self.tanks[s.owner].stats.near += (1.0 - closest / NEAR_MISS).max(0.0);
                 self.events.push(Event::WallHit {
                     pos: s.pos + dir * wall_t,
                 });
                 self.shells.swap_remove(i);
             } else {
                 self.shells[i].pos = s.pos + s.vel * DT;
+                self.shells[i].closest = closest;
                 i += 1;
             }
         }
@@ -323,12 +336,26 @@ impl World {
                 t.last_seen = Some(c.pos);
                 t.since_seen = 0.0;
                 t.stats.radar_time += DT;
-                t.stats.aim += wrap_angle(c.bearing - t.turret_abs()).cos() * DT;
             } else {
                 t.since_seen += DT;
             }
         }
+        // Training-only signal: how well the gun points at the enemy (walls ignored).
+        if self.tanks[0].alive && self.tanks[1].alive {
+            for i in 0..2 {
+                let bearing = (self.tanks[1 - i].pos - self.tanks[i].pos).angle();
+                let t = &mut self.tanks[i];
+                let c = wrap_angle(bearing - t.turret_abs()).cos().max(0.0);
+                t.stats.aim += c.powi(4) * DT;
+            }
+        }
     }
+}
+
+/// Distance from point `c` to the segment o + dir * [0, len].
+fn segment_dist(o: Vec2, dir: Vec2, len: f32, c: Vec2) -> f32 {
+    let t = (c - o).dot(dir).clamp(0.0, len);
+    (o + dir * t - c).len()
 }
 
 /// Distance along unit `dir` from `o` to a circle, if the ray (t >= 0) hits it.

@@ -3,6 +3,9 @@
 use super::{ARENA, CELL, GRID, Vec2, WALL_THICK};
 use crate::rng::Rng;
 
+/// Fraction of perfect-maze walls kept at density 1.
+pub const MAX_WALL_KEEP: f32 = 0.55;
+
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub min: Vec2,
@@ -123,13 +126,15 @@ impl Terrain {
             stack.push((nx, ny));
         }
 
-        // Thin the maze: keep each remaining wall with probability `density`.
+        // Thin the maze into a light labyrinth with loops: density 1 keeps
+        // MAX_WALL_KEEP of the walls, density 0 removes all of them.
+        let keep = density * MAX_WALL_KEEP;
         for x in 0..n {
             for y in 0..n {
-                if right[x][y] && !rng.chance(density) {
+                if right[x][y] && !rng.chance(keep) {
                     right[x][y] = false;
                 }
-                if down[x][y] && !rng.chance(density) {
+                if down[x][y] && !rng.chance(keep) {
                     down[x][y] = false;
                 }
             }
