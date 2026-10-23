@@ -47,10 +47,18 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 ## Training methods
 
 - **GA**: tournament selection, elitism, uniform crossover and Gaussian mutation over the flat weight vector. Works with MLP, Elman and GRU.
+- **ES**: OpenAI-style evolution strategy. Antithetic Gaussian perturbations of a single weight vector, centred-rank fitness and Adam. Works with MLP, Elman and GRU.
 - **NEAT**: speciation with an adaptive compatibility threshold, fitness sharing, stagnation culling, and add-node / add-connection mutations.
 - **PPO**: a Gaussian policy over the network's tanh outputs, a separate value MLP, GAE, the clipped surrogate objective and Adam. Recurrent nets train with truncated BPTT. All gradients are hand-written and checked against finite differences (`tests/grad.rs`). Works with MLP, Elman and GRU.
 
-All three methods share the same training loop:
+**Imitation warm start** (on by default for MLP, Elman and GRU):
+- Before training, the net clones the scripted veteran bot from demonstrations, with DAgger rounds: the net drives and the bot labels the states it visits.
+- GA, ES or PPO then fine-tune from there.
+- Pretrained weights are cached in `models/pretrained/`.
+- Why it's needed: from scratch, nets learn very slowly. A diagnosis showed that a GA champion kept its radar on the enemy only 3% of the time, against 17% for the scripted bot, so it fired from stale information.
+- Cloning alone gets MLP-L and GRU to parity with the bot. ES fine-tuning then pushes a GRU past it.
+
+All methods share the same training loop:
 - **Self-play:** opponents are drawn from a hall of fame of past champions and from a scripted bot.
 - **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie* and finally a *veteran*. It moves up a level once the champion wins at least 55% of its matches against the current level.
 - **Shaping:** small rewards for tracking the enemy on radar, pointing the gun at it, near-misses and survival. The shaping weight anneals over training. PPO uses potential-based shaping, which leaves the optimal policy unchanged.
@@ -70,7 +78,7 @@ All three methods share the same training loop:
   - Speed goes from 0.25× to 100×, or *max*. You can also pause or advance one step at a time.
   - Overlays show radar beams, wall rays and the last-seen marker. A HUD shows ammo, reload and the live network outputs.
 - **Benchmark**
-  - Trains every architecture × method with the same simulated-step budget.
+  - Trains every architecture × method with the same budget: wall-clock time per entry (the default) and/or simulated steps. Imitation pretraining isn't counted in the budget.
   - Then runs a round-robin tournament between the champions and the veteran bot.
   - Results are an Elo ranking and a score matrix, saved to `results/`. Champions go to `models/champions/`.
 
@@ -78,7 +86,9 @@ All three methods share the same training loop:
 
 ```
 cargo run --release --example train_cli -- gru ppo 100 population=32 ppo.lr=0.0005
-cargo run --release --example benchmark_cli -- 200 100   # M steps per entry, matches per pairing
+cargo run --release --example benchmark_cli -- 6 100     # minutes per entry, matches per pairing
+cargo run --release --example imitate -- gru 20          # imitation only, then play the veteran
+cargo run --release --example diagnose -- models/champions/gru_es.json   # play statistics vs the veteran
 cargo run --release --example bench                      # simulation speed
 cargo test --release
 ```
