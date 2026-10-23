@@ -1,6 +1,7 @@
 //! egui front-end: Train, Display and Benchmark tabs.
 
 pub mod arena_view;
+pub mod bench_tab;
 pub mod display_tab;
 pub mod train_tab;
 
@@ -17,6 +18,7 @@ pub struct App {
     tab: Tab,
     display: display_tab::DisplayTab,
     train: train_tab::TrainTab,
+    bench: bench_tab::BenchTab,
 }
 
 impl App {
@@ -25,6 +27,7 @@ impl App {
             tab: Tab::Display,
             display: display_tab::DisplayTab::default(),
             train: train_tab::TrainTab::default(),
+            bench: bench_tab::BenchTab::default(),
         }
     }
 }
@@ -46,14 +49,17 @@ impl eframe::App for App {
             self.display.set_pilot(1, display_tab::Pilot::Scripted);
             self.tab = Tab::Display;
         }
+        self.bench.poll();
+        if let Some((a, b)) = self.bench.watch_request.take() {
+            self.display.set_pilot(0, display_tab::Pilot::Model(a));
+            let b = b.map_or(display_tab::Pilot::Scripted, display_tab::Pilot::Model);
+            self.display.set_pilot(1, b);
+            self.tab = Tab::Display;
+        }
         match self.tab {
             Tab::Display => self.display.ui(ui),
             Tab::Train => self.train.ui(ui),
-            Tab::Benchmark => {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    ui.label("Coming soon.");
-                });
-            }
+            Tab::Benchmark => self.bench.ui(ui),
         }
     }
 }

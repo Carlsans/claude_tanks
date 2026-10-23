@@ -1,5 +1,6 @@
 //! Training runs on a background thread; the GUI talks to it through channels.
 
+pub mod benchmark;
 pub mod eval;
 pub mod ga;
 pub mod neat_evo;

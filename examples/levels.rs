@@ -14,7 +14,7 @@ fn main() {
                     &mut ScriptedBot::new(s),
                     &mut ScriptedBot::with_level(s + 5, lvl as u8),
                 );
-                w[r.winner.map_or(2, |x| x)] += 1;
+                w[r.winner.unwrap_or(2)] += 1;
             }
             println!(
                 "vs {name:13} density {d:.1}: W {} L {} D {}",

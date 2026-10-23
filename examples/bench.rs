@@ -15,7 +15,7 @@ fn main() {
             &mut ScriptedBot::new(seed),
             &mut ScriptedBot::new(seed + 7),
         );
-        wins[r.winner.map_or(2, |w| w)] += 1;
+        wins[r.winner.unwrap_or(2)] += 1;
         ticks += r.ticks as u64;
     }
     let s = start.elapsed().as_secs_f64();
