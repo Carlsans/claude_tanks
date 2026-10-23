@@ -161,13 +161,18 @@ impl BenchTab {
                     ui.label(format!("{}", pos + 1));
                     ui.label(&c.name);
                     ui.label(format!("{:.0}", c.elo));
-                    ui.label(format!(
-                        "{:.0} / {:.0} / {:.0}",
-                        c.vs_scripted.win * 100.0,
-                        c.vs_scripted.draw * 100.0,
-                        c.vs_scripted.loss * 100.0
-                    ));
-                    ui.label(format!("{:.0} s", c.train_seconds));
+                    if c.model.is_some() {
+                        ui.label(format!(
+                            "{:.0} / {:.0} / {:.0}",
+                            c.vs_scripted.win * 100.0,
+                            c.vs_scripted.draw * 100.0,
+                            c.vs_scripted.loss * 100.0
+                        ));
+                        ui.label(format!("{:.0} s", c.train_seconds));
+                    } else {
+                        ui.label("-");
+                        ui.label("-");
+                    }
                     if let Some(p) = &c.model {
                         if ui.small_button("watch vs #1").clicked() {
                             let top = r.contestants[rank[0]].model.clone();
