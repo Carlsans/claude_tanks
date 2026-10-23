@@ -16,8 +16,8 @@ pub struct EsParams {
 impl Default for EsParams {
     fn default() -> Self {
         EsParams {
-            sigma: 0.03,
-            lr: 0.01,
+            sigma: 0.01,
+            lr: 0.003,
             weight_decay: 0.002,
         }
     }

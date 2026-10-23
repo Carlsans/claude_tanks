@@ -12,8 +12,11 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BenchConfig {
     pub entries: Vec<(Arch, Method)>,
-    /// Simulated ticks per entry.
+    /// Simulated ticks per entry (0 = no limit).
     pub budget_steps: u64,
+    /// Training seconds per entry (0 = no limit).
+    #[serde(default)]
+    pub budget_seconds: f64,
     /// Matches per pairing in the tournament.
     pub matches: usize,
     pub threads: usize,
@@ -24,7 +27,8 @@ impl Default for BenchConfig {
     fn default() -> Self {
         BenchConfig {
             entries: all_entries(),
-            budget_steps: 300_000_000,
+            budget_steps: 0,
+            budget_seconds: 360.0,
             matches: 60,
             threads: std::thread::available_parallelism().map_or(4, |n| n.get()),
             seed: 7,
@@ -56,6 +60,8 @@ pub struct Contestant {
     pub vs_scripted: Record,
     pub train_seconds: f64,
     pub generations: u32,
+    #[serde(default)]
+    pub train_steps: u64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -117,8 +123,17 @@ impl BenchResults {
         }
         if let Some(cfg) = &self.config {
             s += &format!(
-                "\nBudget: {} M simulated ticks per entry; {} matches per pairing. {}\n",
-                cfg.budget_steps / 1_000_000,
+                "\nBudget per entry: {}{}; {} matches per pairing. {}\n",
+                if cfg.budget_seconds > 0.0 {
+                    format!("{:.0} s of training", cfg.budget_seconds)
+                } else {
+                    String::new()
+                },
+                if cfg.budget_steps > 0 {
+                    format!(" {} M simulated ticks", cfg.budget_steps / 1_000_000)
+                } else {
+                    String::new()
+                },
                 cfg.matches,
                 self.finished
             );
@@ -213,6 +228,7 @@ fn run(cfg: BenchConfig, tx: &Sender<BenchMsg>, stop: &Receiver<()>) {
             method,
             seed: cfg.seed + k as u64,
             max_steps: cfg.budget_steps,
+            max_seconds: cfg.budget_seconds,
             threads: cfg.threads,
             ..Default::default()
         };
@@ -246,6 +262,7 @@ fn run(cfg: BenchConfig, tx: &Sender<BenchMsg>, stop: &Receiver<()>) {
             vs_scripted: last.vs_scripted,
             train_seconds: last.seconds,
             generations: last.generation + 1,
+            train_steps: last.steps,
         });
     }
     contestants.push(Contestant {

@@ -64,8 +64,12 @@ impl BenchTab {
                 for (k, (a, m)) in entries.iter().enumerate() {
                     ui.checkbox(&mut self.enabled[k], entry_name(*a, *m));
                 }
+                let mut mins = (self.cfg.budget_seconds / 60.0) as f32;
+                if ui.add(egui::Slider::new(&mut mins, 0.0..=240.0).text("minutes / entry (0 = none)")).changed() {
+                    self.cfg.budget_seconds = mins as f64 * 60.0;
+                }
                 let mut m = (self.cfg.budget_steps / 1_000_000) as u32;
-                if ui.add(egui::Slider::new(&mut m, 10..=20_000).logarithmic(true).text("M steps / entry")).changed() {
+                if ui.add(egui::Slider::new(&mut m, 0..=20_000).logarithmic(true).text("M steps / entry (0 = none)")).changed() {
                     self.cfg.budget_steps = m as u64 * 1_000_000;
                 }
                 ui.add(egui::Slider::new(&mut self.cfg.matches, 10..=400).text("matches / pairing"));

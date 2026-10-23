@@ -64,6 +64,9 @@ pub struct TrainConfig {
     pub max_steps: u64,
     /// Stop after this many generations (0 = no limit).
     pub max_generations: u32,
+    /// Stop after this many seconds of training (0 = no limit).
+    #[serde(default)]
+    pub max_seconds: f64,
     /// Fraction of opponents that are the scripted bot (rest: hall of fame).
     pub scripted_share: f32,
     pub hof_size: usize,
@@ -88,17 +91,18 @@ impl Default for TrainConfig {
             method: Method::Ga,
             seed: 1,
             population: 96,
-            matches: 8,
+            matches: 12,
             density: (0.0, 1.0),
             threads: std::thread::available_parallelism().map_or(4, |n| n.get()),
             max_steps: 0,
             max_generations: 0,
+            max_seconds: 0.0,
             scripted_share: 0.5,
             hof_size: 20,
             shaping_start: 0.6,
             shaping_end: 0.15,
             shaping_gens: 300,
-            eval_matches: 48,
+            eval_matches: 96,
             imitation: imitation::ImitationParams::default(),
             ga: ga::GaParams::default(),
             es: es::EsParams::default(),
@@ -443,6 +447,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let cfg = st.cfg.clone();
         if (cfg.max_steps > 0 && st.steps >= cfg.max_steps)
             || (cfg.max_generations > 0 && st.generation >= cfg.max_generations)
+            || (cfg.max_seconds > 0.0 && st.seconds >= cfg.max_seconds)
         {
             let _ = st.save();
             let _ = tx.send(Msg::Log("Budget reached".into()));

@@ -191,6 +191,28 @@ impl TrainTab {
             }
             if c.arch != Arch::Neat {
                 ui.label(format!("{} parameters", c.arch.param_count()));
+                ui.checkbox(
+                    &mut c.imitation.enabled,
+                    "Warm start by imitating the scripted bot",
+                );
+                if c.imitation.enabled {
+                    ui.collapsing("Imitation settings", |ui| {
+                        let im = &mut c.imitation;
+                        ui.add(
+                            egui::Slider::new(&mut im.matches, 20..=2000)
+                                .text("demo matches / round"),
+                        );
+                        ui.add(egui::Slider::new(&mut im.epochs, 1..=100).text("epochs"));
+                        ui.add(
+                            egui::Slider::new(&mut im.dagger_rounds, 0..=10).text("DAgger rounds"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut im.lr, 1e-4..=1e-2)
+                                .logarithmic(true)
+                                .text("learning rate"),
+                        );
+                    });
+                }
             }
             let pop_label = if c.method == Method::Ppo {
                 "parallel games"
@@ -210,6 +232,13 @@ impl TrainTab {
             });
 
             ui.collapsing("Budget", |ui| {
+                let mut mins = (c.max_seconds / 60.0) as f32;
+                if ui
+                    .add(egui::Slider::new(&mut mins, 0.0..=1440.0).text("max minutes (0 = none)"))
+                    .changed()
+                {
+                    c.max_seconds = mins as f64 * 60.0;
+                }
                 ui.add(
                     egui::Slider::new(&mut c.max_generations, 0..=10000)
                         .text("max generations (0 = none)"),

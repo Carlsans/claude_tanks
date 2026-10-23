@@ -103,14 +103,28 @@ struct Episode {
     ticks: u64,
 }
 
+/// Index of the fire output: Bernoulli with p = (out + 1) / 2, so "fire when out > 0"
+/// at test time is the mode of the training distribution.
+const FIRE: usize = 4;
+
+fn fire_p(out: f32) -> f32 {
+    ((out + 1.0) * 0.5).clamp(0.01, 0.99)
+}
+
+/// Log-probability: Gaussian for the 4 continuous outputs, Bernoulli for fire (a = 1 or 0).
 fn log_prob(a: &[f32; N_OUT], mu: &[f32; N_OUT], log_std: &[f32]) -> f32 {
     let mut lp = 0.0;
-    for k in 0..N_OUT {
+    for k in 0..FIRE {
         let s = log_std[k].exp();
         let z = (a[k] - mu[k]) / s;
         lp += -0.5 * z * z - log_std[k] - 0.918_938_5;
     }
-    lp
+    let p = fire_p(mu[FIRE]);
+    lp + if a[FIRE] > 0.5 {
+        p.ln()
+    } else {
+        (1.0 - p).ln()
+    }
 }
 
 fn value_of(vp: &[f32], layers: &[(usize, usize, usize, usize)], x: &[f32]) -> f32 {
@@ -208,14 +222,21 @@ impl Ppo {
                 }
                 let mu = net.forward(&obs);
                 let mut a = [0.0; N_OUT];
-                for k in 0..N_OUT {
+                for k in 0..FIRE {
                     a[k] = mu[k] + log_std[k].exp() * rng.gauss();
                 }
+                a[FIRE] = if rng.chance(fire_p(mu[FIRE])) {
+                    1.0
+                } else {
+                    0.0
+                };
                 ep.logp.push(log_prob(&a, &mu, log_std));
                 ep.val.push(value_of(&self.value, &vlayers, &obs));
                 ep.obs.push(obs);
                 ep.act.push(a);
-                acts[0] = Action::from_outputs(&a);
+                let mut env_a = a;
+                env_a[FIRE] = if a[FIRE] > 0.5 { 1.0 } else { -1.0 };
+                acts[0] = Action::from_outputs(&env_a);
                 acts[1] = opp.act(&w.observe(1));
             }
             w.step(acts);
@@ -347,7 +368,11 @@ impl Ppo {
             }
         }
         let b = batches.max(1) as f32;
-        let mean_std = self.policy[n_net..].iter().map(|v| v.exp()).sum::<f32>() / N_OUT as f32;
+        let mean_std = self.policy[n_net..n_net + FIRE]
+            .iter()
+            .map(|v| v.exp())
+            .sum::<f32>()
+            / FIRE as f32;
         StepReport {
             best_fitness: best,
             mean_fitness: mean,
@@ -468,13 +493,23 @@ fn chunk_grads(
         }
         // d(-min(.))/d(logp) = -adv * ratio when the unclipped branch is active.
         let dlogp = if active { -adv * ratio } else { 0.0 };
-        for k in 0..N_OUT {
+        for k in 0..FIRE {
             let var = (2.0 * log_std[k]).exp();
             let diff = a[k] - mus[j][k];
             d_out[j][k] = dlogp * diff / var;
             // log-std: policy term minus entropy bonus (dH/dlogstd = 1).
             out.gp[n_net + k] += dlogp * (diff * diff / var - 1.0) - p.ent_coef;
         }
+        // Bernoulli fire: d logp / d out = 1/(2p) if fired, -1/(2(1-p)) otherwise (0 where clamped).
+        let fp = fire_p(mus[j][FIRE]);
+        let dl = if !(0.01..0.99).contains(&((mus[j][FIRE] + 1.0) * 0.5)) {
+            0.0
+        } else if a[FIRE] > 0.5 {
+            0.5 / fp
+        } else {
+            -0.5 / (1.0 - fp)
+        };
+        d_out[j][FIRE] = dlogp * dl;
         // Value.
         let acts = dense_forward(vlayers, value, &xs[j], true);
         let v = acts.last().unwrap()[0];

@@ -1,12 +1,13 @@
-//! Headless architecture benchmark: `cargo run --release --example benchmark_cli -- <M steps per entry> [matches]`
+//! Headless architecture benchmark: `cargo run --release --example benchmark_cli -- <minutes per entry> [matches]`
 use claude_tanks::train::benchmark::{BenchConfig, BenchMsg, entry_name, spawn_benchmark};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let msteps: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(300);
+    let minutes: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(6.0);
     let matches: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60);
     let cfg = BenchConfig {
-        budget_steps: msteps * 1_000_000,
+        budget_steps: 0,
+        budget_seconds: minutes * 60.0,
         matches,
         ..Default::default()
     };
