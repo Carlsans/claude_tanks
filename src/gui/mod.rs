@@ -2,6 +2,7 @@
 
 pub mod arena_view;
 pub mod display_tab;
+pub mod train_tab;
 
 use eframe::egui;
 
@@ -15,6 +16,7 @@ enum Tab {
 pub struct App {
     tab: Tab,
     display: display_tab::DisplayTab,
+    train: train_tab::TrainTab,
 }
 
 impl App {
@@ -22,6 +24,7 @@ impl App {
         App {
             tab: Tab::Display,
             display: display_tab::DisplayTab::default(),
+            train: train_tab::TrainTab::default(),
         }
     }
 }
@@ -37,13 +40,25 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.tab, Tab::Benchmark, "Benchmark");
             });
         });
+        self.train.poll();
+        if let Some(p) = self.train.watch_request.take() {
+            self.display.set_pilot(0, display_tab::Pilot::Model(p));
+            self.display.set_pilot(1, display_tab::Pilot::Scripted);
+            self.tab = Tab::Display;
+        }
         match self.tab {
             Tab::Display => self.display.ui(ui),
-            Tab::Train | Tab::Benchmark => {
+            Tab::Train => self.train.ui(ui),
+            Tab::Benchmark => {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.label("Coming soon.");
                 });
             }
         }
     }
+}
+
+/// PPO hyper-parameter widgets (shared by the Train and Benchmark tabs).
+pub fn ppo_params_ui(ui: &mut egui::Ui, _p: &mut crate::train::ppo::PpoParams) {
+    ui.label("(PPO not implemented yet)");
 }
