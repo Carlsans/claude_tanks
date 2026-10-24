@@ -290,6 +290,7 @@ impl TrainTab {
                 for (label, level) in [
                     ("start at level", &mut c.start_level),
                     ("top level", &mut c.top_level),
+                    ("mix bots from", &mut c.mix_from),
                 ] {
                     egui::ComboBox::from_label(label)
                         .selected_text(LEVELS[(*level).min(MAX_LEVEL) as usize])

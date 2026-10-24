@@ -80,6 +80,10 @@ pub struct TrainConfig {
     /// Highest curriculum level (the newer bots can be left out).
     #[serde(default = "max_level")]
     pub top_level: u8,
+    /// Past this level, scripted opponents mix every level from here up to the
+    /// current one.
+    #[serde(default = "veteran")]
+    pub mix_from: u8,
     /// Fraction of opponents that are the scripted bot (rest: league and hall of fame).
     pub scripted_share: f32,
     pub hof_size: usize,
@@ -118,6 +122,10 @@ fn max_level() -> u8 {
     MAX_LEVEL
 }
 
+fn veteran() -> u8 {
+    VETERAN
+}
+
 impl Default for TrainConfig {
     fn default() -> Self {
         TrainConfig {
@@ -136,6 +144,7 @@ impl Default for TrainConfig {
             init_model: String::new(),
             start_level: 0,
             top_level: MAX_LEVEL,
+            mix_from: VETERAN,
             scripted_share: 0.5,
             hof_size: 20,
             league: Vec::new(),
@@ -424,10 +433,11 @@ fn opponents(
     (0..cfg.matches)
         .map(|_| {
             if (hof.is_empty() && league.is_empty()) || rng.chance(cfg.scripted_share) {
-                // Past the veteran, keep playing every level from the veteran up:
+                // Past the veteran, keep playing every level from `mix_from` up:
                 // training against the ace alone made nets forget the veteran.
-                let lvl = if level > VETERAN {
-                    VETERAN + rng.below((level - VETERAN + 1) as usize) as u8
+                let from = cfg.mix_from.min(level);
+                let lvl = if level > from {
+                    from + rng.below((level - from + 1) as usize) as u8
                 } else {
                     level
                 };
