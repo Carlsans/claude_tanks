@@ -3,5 +3,6 @@
 !/models/champions/
 !/models/pretrained/
 !/models/day/
+!/models/robocode/
 /results/tmp/
 /.claude/

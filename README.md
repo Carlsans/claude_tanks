@@ -136,12 +136,15 @@ The app also plays by the rules of [Robocode Tank Royale](https://robocode.dev),
 - Opponents are the run's own past champions and built-in ports of five official sample bots: SpinBot, Walls, TrackFire, RamFire and Crazy (`src/royale/sparring.rs`). A small interpreter reproduces the Bot API's blocking commands and movement bookkeeping. The ports play like the originals: Walls vs SpinBot 15–15 (real 16–14), RamFire vs Crazy 30–0 (real 20–0).
 - Fitness is +1 for a win and −1 for a loss, plus shaping for bullet damage dealt minus taken. `best.json` is picked on the average win−loss against the five ports.
 - `royale_eval <model>` scores a model against each port and against the day champion. To meet the real bots, use the Robocode tab or `royale`.
+- `royale_tournament <duels> <out> A=a.json B=b.json ...` plays a round-robin under Robocode rules between networks and the five ports, with Elo.
+- First results ([`results/robocode/`](results/robocode/README.md)): two hours of fine-tuning took the day champion from 65% to 99% of duels won against the ports, and to 88–96% of rounds against the real Java sample bots, five of which it never met in training. The Robocode champion is [`models/champions/gru_es_robocode.json`](models/champions/gru_es_robocode.json). Longer self-play made networks that beat their relatives but not other styles, so the next runs add a league of other networks.
 
 ```sh
 # Unpack sample-bots-Java-1.4.0.zip into bots/, then:
 cargo run --release --example royale -- rounds=10 bots/Walls bots/SpinBot
 cargo run --release --example royale -- rounds=10 model:models/champions/gru_es_day.json bots/SpinBot
 cargo run --release --example royale -- bot:hunter wait:MyBot   # a bot you start yourself
+cargo run --release --example royale -- rounds=20 model:models/champions/gru_es_robocode.json bots/Walls
 ```
 
 ## The GUI
@@ -220,4 +223,4 @@ The architecture mattered little: GRU-32, GRU-64 and MLP-L land within a few Elo
 - GA lost what imitation gave it (fixed since: smaller mutations when starting from imitation).
 - NEAT from scratch stayed far behind.
 
-Trained weights are in [`models/champions/`](models/champions) and the imitation-pretrained starting points are in [`models/pretrained/`](models/pretrained). Every finished day-run's `best`, `latest` and `ema` networks are published in [`models/day/`](models/day) (a `git pull` brings them).
+Trained weights are in [`models/champions/`](models/champions) and the imitation-pretrained starting points are in [`models/pretrained/`](models/pretrained). Every finished run's `best`, `latest` and `ema` networks are published in [`models/day/`](models/day) and, for runs under Robocode rules, [`models/robocode/`](models/robocode) (a `git pull` brings them).
