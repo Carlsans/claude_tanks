@@ -6,6 +6,7 @@
 //! counter-clockwise.
 
 pub mod battle;
+pub mod duel;
 pub mod pilot;
 pub mod protocol;
 pub mod server;

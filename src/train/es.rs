@@ -1,7 +1,7 @@
 //! OpenAI-style evolution strategy: antithetic Gaussian perturbations of one mean
 //! parameter vector, centered-rank fitness shaping, Adam update.
 
-use super::eval::eval_fixed;
+use super::eval::eval_members;
 use super::{StepEnv, StepReport, TrainConfig};
 use crate::nn::{Genes, fixed};
 use crate::rng::Rng;
@@ -45,10 +45,9 @@ impl Es {
 
     pub fn step(&mut self, env: StepEnv) -> StepReport {
         let p = env.cfg.es;
-        let arch = env.cfg.arch;
         let pairs = (env.cfg.population / 2).max(1);
         let n = self.theta.len();
-        let rng = env.rng;
+        let rng = &mut *env.rng;
         let noise: Vec<Vec<f32>> = (0..pairs)
             .map(|_| (0..n).map(|_| rng.gauss()).collect())
             .collect();
@@ -62,14 +61,7 @@ impl Es {
                 .collect()
         };
         let members: Vec<Vec<f32>> = (0..pairs * 2).map(member).collect();
-        let out = eval_fixed(
-            arch,
-            &members,
-            env.use_gpu,
-            &env.opponents,
-            &env.terrains,
-            env.shaping,
-        );
+        let out = eval_members(&env, &members);
         let f = &out.fitness;
         // Centered ranks in [-0.5, 0.5].
         let mut order: Vec<usize> = (0..f.len()).collect();

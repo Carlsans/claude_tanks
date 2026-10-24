@@ -1,6 +1,6 @@
 //! Genetic algorithm over flat parameter vectors (fixed-topology networks).
 
-use super::eval::eval_fixed;
+use super::eval::eval_members;
 use super::{StepEnv, StepReport, TrainConfig};
 use crate::nn::{Genes, fixed};
 use crate::rng::Rng;
@@ -63,16 +63,8 @@ impl Ga {
         } else {
             p.sigma
         };
-        let arch = env.cfg.arch;
         let pop = &self.pop;
-        let out = eval_fixed(
-            arch,
-            pop,
-            env.use_gpu,
-            &env.opponents,
-            &env.terrains,
-            env.shaping,
-        );
+        let out = eval_members(&env, pop);
         let f = &out.fitness;
         let mut order: Vec<usize> = (0..pop.len()).collect();
         order.sort_by(|&a, &b| f[b].total_cmp(&f[a]));

@@ -1,8 +1,13 @@
 //! Match evaluation shared by every trainer: opponents, terrains, fitness.
 
+use super::StepEnv;
 use crate::bots::ScriptedBot;
 use crate::nn::{Arch, Brain, Genes};
 use crate::rng::Rng;
+use crate::royale::duel::{DuelResult, duel};
+use crate::royale::pilot::{Adapter, Driver, Pilot};
+use crate::royale::sparring::Sparring;
+use crate::sim::Rules;
 use crate::sim::world::{Controller, MatchResult, run_match};
 #[cfg(feature = "gpu")]
 use crate::sim::{ACTION_REPEAT, Action, World};
@@ -15,6 +20,8 @@ use std::sync::Arc;
 pub enum Opponent {
     Scripted(u64, u8),
     Net(Arch, Arc<Genes>),
+    /// A built-in port of a Tank Royale sample bot (Robocode rules only).
+    Sparring(Sparring),
 }
 
 impl Opponent {
@@ -22,8 +29,135 @@ impl Opponent {
         match self {
             Opponent::Scripted(s, l) => Box::new(ScriptedBot::with_level(*s, *l)),
             Opponent::Net(a, g) => Box::new(Brain::new(*a, g)),
+            Opponent::Sparring(k) => unreachable!("{} plays Robocode rules only", k.name()),
         }
     }
+
+    /// The opponent as a pilot under Robocode rules.
+    pub fn pilot(&self) -> Box<dyn Pilot> {
+        match self {
+            Opponent::Scripted(s, l) => Box::new(Adapter::new(Driver::Scripted(
+                ScriptedBot::with_level(*s, *l),
+            ))),
+            Opponent::Net(a, g) => Box::new(Adapter::new(Driver::Net(Brain::new(*a, g)))),
+            Opponent::Sparring(k) => Box::new(k.pilot()),
+        }
+    }
+}
+
+/// One of our networks as a pilot under Robocode rules.
+pub fn net_pilot(arch: Arch, params: &[f32]) -> Box<dyn Pilot> {
+    Box::new(Adapter::new(Driver::Net(Brain::new(
+        arch,
+        &Genes::Fixed(params.to_vec()),
+    ))))
+}
+
+/// Fitness of side 0 of a Robocode duel: +1 win, 0 draw, -1 loss, plus shaping
+/// for the bullet damage dealt minus taken (per 100 energy).
+pub fn duel_fitness(r: &DuelResult, shaping: Shaping) -> f32 {
+    let outcome = match r.winner {
+        Some(0) => 1.0,
+        Some(_) => -1.0,
+        None => 0.0,
+    };
+    let damage = ((r.dealt[0] - r.dealt[1]) / 100.0).clamp(-1.0, 1.0) as f32;
+    outcome + shaping.weight * damage
+}
+
+/// A duel with `me` as side 0; odd `k` puts it in the second slot.
+fn duel_as(seed: u64, k: usize, me: &mut dyn Pilot, op: &mut dyn Pilot) -> DuelResult {
+    if k.is_multiple_of(2) {
+        duel(seed, me, op)
+    } else {
+        let r = duel(seed, op, me);
+        DuelResult {
+            winner: r.winner.map(|w| 1 - w),
+            turns: r.turns,
+            dealt: [r.dealt[1], r.dealt[0]],
+        }
+    }
+}
+
+/// `eval_population` under Robocode rules: match k is a duel against
+/// `opps[k]` placed by `seed + k`.
+pub fn eval_population_royale(
+    make: &(dyn Fn(usize) -> Box<dyn Pilot> + Sync),
+    n: usize,
+    opps: &[Opponent],
+    seed: u64,
+    shaping: Shaping,
+) -> EvalOutcome {
+    let k = opps.len();
+    let results: Vec<(usize, f32, u64)> = (0..n * k)
+        .into_par_iter()
+        .map(|job| {
+            let (i, m) = (job / k, job % k);
+            let (mut me, mut op) = (make(i), opps[m].pilot());
+            let r = duel_as(seed + m as u64, m, me.as_mut(), op.as_mut());
+            (i, duel_fitness(&r, shaping), r.turns as u64)
+        })
+        .collect();
+    let mut fitness = vec![0.0; n];
+    let mut ticks = 0;
+    for (i, f, t) in results {
+        fitness[i] += f / k as f32;
+        ticks += t;
+    }
+    EvalOutcome { fitness, ticks }
+}
+
+/// Fixed-topology members under the run's rules.
+pub fn eval_members(env: &StepEnv, members: &[Vec<f32>]) -> EvalOutcome {
+    let cfg = env.cfg;
+    match cfg.rules {
+        Rules::Tanks => eval_fixed(
+            cfg.arch,
+            members,
+            env.use_gpu,
+            &env.opponents,
+            &env.terrains,
+            env.shaping,
+        ),
+        Rules::Robocode => eval_population_royale(
+            &|i| net_pilot(cfg.arch, &members[i]),
+            members.len(),
+            &env.opponents,
+            cfg.seed ^ (env.generation as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            env.shaping,
+        ),
+    }
+}
+
+/// Win / draw / loss against a sparring bot under Robocode rules, on fixed placements.
+pub fn vs_sparring(
+    make: &(dyn Fn() -> Box<dyn Pilot> + Sync),
+    matches: usize,
+    kind: Sparring,
+) -> (Record, u64) {
+    let res: Vec<(Option<usize>, u64)> = (0..matches)
+        .into_par_iter()
+        .map(|j| {
+            let (mut me, mut op) = (make(), kind.pilot());
+            let r = duel_as(900_000_000 + j as u64, j, me.as_mut(), &mut op);
+            (r.winner, r.turns as u64)
+        })
+        .collect();
+    let mut rec = Record::default();
+    let mut ticks = 0;
+    for (w, t) in res {
+        ticks += t;
+        match w {
+            Some(0) => rec.win += 1.0,
+            Some(_) => rec.loss += 1.0,
+            None => rec.draw += 1.0,
+        }
+    }
+    let n = matches.max(1) as f32;
+    rec.win /= n;
+    rec.draw /= n;
+    rec.loss /= n;
+    (rec, ticks)
 }
 
 /// How much shaping is added to the win/draw/loss outcome.
@@ -308,6 +442,7 @@ pub fn eval_population_gpu(
                 _ if opp_set[m].is_some() => None,
                 Opponent::Scripted(s, l) => Some(Box::new(ScriptedBot::with_level(*s, *l))),
                 Opponent::Net(a, g) => Some(Box::new(Brain::new(*a, g))),
+                Opponent::Sparring(k) => unreachable!("{} plays Robocode rules only", k.name()),
             };
             GpuJob {
                 world: World::new(terrains[m].clone(), m % 2 == 1),

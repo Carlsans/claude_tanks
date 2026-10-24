@@ -101,6 +101,9 @@ pub struct ModelFile {
     pub fitness: f32,
     /// Win rate vs the scripted bot at save time.
     pub vs_scripted: f32,
+    /// The rules it was trained under.
+    #[serde(default)]
+    pub rules: crate::sim::Rules,
     pub genes: Genes,
 }
 

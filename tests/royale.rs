@@ -227,3 +227,29 @@ fn sparring_ports_play_like_the_samples() {
     let [walls, spin] = wins(Sparring::Walls, Sparring::SpinBot, 20);
     assert!(walls >= 4 && spin >= 4, "Walls {walls} vs SpinBot {spin}");
 }
+
+/// Training evaluation under Robocode rules: networks duel the sample-bot ports.
+#[test]
+fn robocode_population_evaluation() {
+    use claude_tanks::nn::Arch;
+    use claude_tanks::nn::fixed::init_params;
+    use claude_tanks::rng::Rng;
+    use claude_tanks::royale::sparring::Sparring;
+    use claude_tanks::train::eval::{Opponent, Shaping, eval_population_royale, net_pilot};
+    let mut rng = Rng::new(4);
+    let members: Vec<Vec<f32>> = (0..3).map(|_| init_params(Arch::MlpS, &mut rng)).collect();
+    let opps = vec![
+        Opponent::Sparring(Sparring::SpinBot),
+        Opponent::Sparring(Sparring::Walls),
+    ];
+    let out = eval_population_royale(
+        &|i| net_pilot(Arch::MlpS, &members[i]),
+        members.len(),
+        &opps,
+        9,
+        Shaping { weight: 0.5 },
+    );
+    assert_eq!(out.fitness.len(), 3);
+    assert!(out.fitness.iter().all(|f| f.is_finite() && f.abs() <= 1.5));
+    assert!(out.ticks > 0);
+}

@@ -9,6 +9,23 @@ use std::f32::consts::PI;
 pub use terrain::Terrain;
 pub use world::{Action, MatchResult, World};
 
+/// Which game a pilot plays: ours, or Robocode Tank Royale's (`crate::royale`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Rules {
+    #[default]
+    Tanks,
+    Robocode,
+}
+
+impl Rules {
+    pub fn name(self) -> &'static str {
+        match self {
+            Rules::Tanks => "Claude Tanks",
+            Rules::Robocode => "Robocode",
+        }
+    }
+}
+
 /// Simulation tick (seconds).
 pub const DT: f32 = 1.0 / 60.0;
 /// Controllers are queried every `ACTION_REPEAT` ticks (30 Hz).

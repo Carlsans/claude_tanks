@@ -1,7 +1,9 @@
 //! Headless training: `cargo run --release --example train_cli -- <arch> <method> <generations>`
-//! [key=value ...] where key is a TrainConfig path, e.g. `ppo.lr=0.001 population=32 density=[0,0.5]`.
+//! [key=value ...] where key is a TrainConfig path, e.g. `ppo.lr=0.001 population=32 density=[0,0.5]`
+//! or `rules=Robocode` (train in Robocode duels against the sample-bot ports).
 //! arch: mlp_s | mlp_l | elman | gru | gru_l | gru_clock | neat, method: ga | es | neat | ppo
 use claude_tanks::nn::Arch;
+use claude_tanks::sim::Rules;
 use claude_tanks::train::{Method, Msg, TrainConfig, spawn};
 
 fn main() {
@@ -35,9 +37,22 @@ fn main() {
         *node = serde_json::from_str(val).unwrap_or(serde_json::Value::String(val.into()));
     }
     let cfg: TrainConfig = serde_json::from_value(v).expect("config");
+    let rules = cfg.rules;
     let h = spawn(cfg, None);
     for m in h.msg.iter() {
         match m {
+            Msg::Stats(s) if rules == Rules::Robocode => println!(
+                "gen {:4} steps {:>11} {:6.1}s best {:+.3} mean {:+.3} vs sample bots W{:3.0}% D{:3.0}% L{:3.0}% {:?}",
+                s.generation,
+                s.steps,
+                s.seconds,
+                s.best_fitness,
+                s.mean_fitness,
+                s.vs_scripted.win * 100.0,
+                s.vs_scripted.draw * 100.0,
+                s.vs_scripted.loss * 100.0,
+                s.extra
+            ),
             Msg::Stats(s) => println!(
                 "gen {:4} L{} steps {:>11} {:6.1}s best {:+.3} mean {:+.3} vs veteran W{:3.0}% D{:3.0}% L{:3.0}% ace W{:3.0}% L{:3.0}% stronger W{:3.0}% L{:3.0}% {:?}",
                 s.generation,

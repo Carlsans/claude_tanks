@@ -11,6 +11,8 @@ pub mod ppo;
 use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, Brain, Genes, ModelFile, models_dir};
 use crate::rng::Rng;
+use crate::royale::sparring::Sparring;
+use crate::sim::Rules;
 use crossbeam_channel::{Receiver, Sender};
 use eval::{Opponent, Record, Shaping};
 use std::path::PathBuf;
@@ -38,6 +40,12 @@ impl Method {
             Method::Ppo => "PPO",
         }
     }
+    /// Whether this method can train under these rules (Robocode duels are
+    /// only wired into the population methods).
+    pub fn supports_rules(self, rules: Rules) -> bool {
+        rules == Rules::Tanks || matches!(self, Method::Ga | Method::Es)
+    }
+
     /// Architectures this method can train.
     pub fn supports(self, arch: Arch) -> bool {
         match self {
@@ -107,6 +115,9 @@ pub struct TrainConfig {
     pub shaping_gens: u32,
     /// Matches vs the scripted bot used to score the champion each generation.
     pub eval_matches: usize,
+    /// Our game, or Robocode's (GA and ES only; no imitation, no GPU).
+    #[serde(default)]
+    pub rules: Rules,
     /// Warm start fixed-topology nets by imitating the scripted bot.
     pub imitation: imitation::ImitationParams,
     pub ga: ga::GaParams,
@@ -160,6 +171,7 @@ impl Default for TrainConfig {
             shaping_end: 0.15,
             shaping_gens: 300,
             eval_matches: 96,
+            rules: Rules::Tanks,
             imitation: imitation::ImitationParams::default(),
             ga: ga::GaParams::default(),
             es: es::EsParams::default(),
@@ -442,24 +454,22 @@ fn opponents(
 ) -> Vec<Opponent> {
     (0..cfg.matches)
         .map(|_| {
-            if (hof.is_empty() && league.is_empty()) || rng.chance(cfg.scripted_share) {
+            let scripted = (hof.is_empty() && league.is_empty()) || rng.chance(cfg.scripted_share);
+            if scripted && cfg.rules == Rules::Robocode {
+                // The sample-bot ports; `bot_scores` is indexed like `Sparring::ALL`.
+                let k = if cfg.bot_focus > 0.0 {
+                    pick_weighted(&focus_weights(cfg, bot_scores, 0..Sparring::ALL.len()), rng)
+                } else {
+                    rng.below(Sparring::ALL.len())
+                };
+                Opponent::Sparring(Sparring::ALL[k])
+            } else if scripted {
                 // Past the veteran, keep playing every level from `mix_from` up:
                 // training against the ace alone made nets forget the veteran.
                 let from = cfg.mix_from.min(level);
                 let lvl = if level > from && cfg.bot_focus > 0.0 {
-                    let w: Vec<f32> = (from..=level)
-                        .map(|l| {
-                            let score = bot_scores.get(l as usize).copied().unwrap_or(0.5);
-                            (1.0 - score).max(0.02).powf(cfg.bot_focus)
-                        })
-                        .collect();
-                    let mut x = rng.f32() * w.iter().sum::<f32>();
-                    let mut k = 0;
-                    while k + 1 < w.len() && x >= w[k] {
-                        x -= w[k];
-                        k += 1;
-                    }
-                    from + k as u8
+                    let levels = from as usize..=level as usize;
+                    from + pick_weighted(&focus_weights(cfg, bot_scores, levels), rng) as u8
                 } else if level > from {
                     from + rng.below((level - from + 1) as usize) as u8
                 } else {
@@ -478,6 +488,30 @@ fn opponents(
         .collect()
 }
 
+/// `bot_focus` weights of the bots at these indices of `bot_scores`.
+fn focus_weights(
+    cfg: &TrainConfig,
+    bot_scores: &[f32],
+    idx: impl Iterator<Item = usize>,
+) -> Vec<f32> {
+    idx.map(|i| {
+        let score = bot_scores.get(i).copied().unwrap_or(0.5);
+        (1.0 - score).max(0.02).powf(cfg.bot_focus)
+    })
+    .collect()
+}
+
+/// Index drawn with probability proportional to its weight.
+fn pick_weighted(w: &[f32], rng: &mut Rng) -> usize {
+    let mut x = rng.f32() * w.iter().sum::<f32>();
+    let mut k = 0;
+    while k + 1 < w.len() && x >= w[k] {
+        x -= w[k];
+        k += 1;
+    }
+    k
+}
+
 fn model(cfg: &TrainConfig, genes: Genes, s: &GenStats) -> ModelFile {
     ModelFile {
         name: cfg.run_name.clone(),
@@ -486,6 +520,7 @@ fn model(cfg: &TrainConfig, genes: Genes, s: &GenStats) -> ModelFile {
         generation: s.generation,
         fitness: s.best_fitness,
         vs_scripted: s.vs_scripted.win,
+        rules: cfg.rules,
         genes,
     }
 }
@@ -509,6 +544,7 @@ impl DeviceChoice {
         #[cfg(feature = "gpu")]
         let possible = cfg.use_gpu
             && matches!(cfg.method, Method::Ga | Method::Es)
+            && cfg.rules == Rules::Tanks
             && crate::gpu::supports(cfg.arch)
             && crate::gpu::get().is_some();
         #[cfg(not(feature = "gpu"))]
@@ -574,6 +610,14 @@ impl DeviceChoice {
 }
 
 fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Sender<Msg>) {
+    if !cfg.method.supports_rules(cfg.rules) {
+        let _ = tx.send(Msg::Log(format!(
+            "{} cannot train under {} rules (GA and ES can)",
+            cfg.method.name(),
+            cfg.rules.name()
+        )));
+        return;
+    }
     let mut st = match resume {
         Some(st) => {
             let _ = tx.send(Msg::Log(format!(
@@ -604,12 +648,14 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 }));
             }
             let init = from_model.or_else(|| {
-                (cfg.imitation.enabled && cfg.arch != Arch::Neat).then(|| {
-                    let _ = tx.send(Msg::Log("Imitation warm start...".into()));
-                    imitation::pretrain_cached(cfg.arch, &cfg.imitation, &mut rng, &|l| {
-                        let _ = tx.send(Msg::Log(l));
-                    })
-                })
+                (cfg.imitation.enabled && cfg.arch != Arch::Neat && cfg.rules == Rules::Tanks).then(
+                    || {
+                        let _ = tx.send(Msg::Log("Imitation warm start...".into()));
+                        imitation::pretrain_cached(cfg.arch, &cfg.imitation, &mut rng, &|l| {
+                            let _ = tx.send(Msg::Log(l));
+                        })
+                    },
+                )
             });
             let trainer = Trainer::new(&cfg, &mut rng, init);
             let level = cfg.start_level.min(cfg.top_level.min(MAX_LEVEL));
@@ -714,27 +760,65 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let arch = cfg.arch;
         let make =
             || -> Box<dyn crate::sim::world::Controller> { Box::new(Brain::new(arch, &champ)) };
-        let (record, mut eval_ticks) = eval::vs_scripted(&make, cfg.eval_matches, VETERAN);
-        let (vs_ace, t) = eval::vs_scripted(&make, cfg.eval_matches, ACE);
-        eval_ticks += t;
-        // Every bot above the ace that the curriculum has reached.
-        let tops: Vec<Record> = (ACE + 1..=st.level)
-            .map(|l| {
-                let (r, t) = eval::vs_scripted(&make, cfg.eval_matches, l);
-                eval_ticks += t;
-                r
-            })
-            .collect();
+        let mut eval_ticks = 0;
+        // Records against every bot this generation scores on, with their
+        // `bot_scores` index.
+        let (record, vs_ace, tops, all) = match cfg.rules {
+            Rules::Tanks => {
+                let (record, t) = eval::vs_scripted(&make, cfg.eval_matches, VETERAN);
+                let (vs_ace, t2) = eval::vs_scripted(&make, cfg.eval_matches, ACE);
+                eval_ticks += t + t2;
+                // Every bot above the ace that the curriculum has reached.
+                let tops: Vec<Record> = (ACE + 1..=st.level)
+                    .map(|l| {
+                        let (r, t) = eval::vs_scripted(&make, cfg.eval_matches, l);
+                        eval_ticks += t;
+                        r
+                    })
+                    .collect();
+                let all: Vec<(usize, Record)> =
+                    [(VETERAN as usize, record), (ACE as usize, vs_ace)]
+                        .into_iter()
+                        .chain((ACE as usize + 1..).zip(tops.iter().copied()))
+                        .collect();
+                (record, vs_ace, tops, all)
+            }
+            Rules::Robocode => {
+                let Genes::Fixed(p) = &champ else {
+                    unreachable!("Robocode rules train fixed-topology nets")
+                };
+                let make = || eval::net_pilot(arch, p);
+                let all: Vec<(usize, Record)> = Sparring::ALL
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| {
+                        let (r, t) = eval::vs_sparring(&make, cfg.eval_matches, *s);
+                        eval_ticks += t;
+                        (k, r)
+                    })
+                    .collect();
+                let recs: Vec<Record> = all.iter().map(|(_, r)| *r).collect();
+                (Record::mean(&recs), Record::default(), Vec::new(), all)
+            }
+        };
         // Smoothed score against every bot evaluated this generation.
         st.bot_scores.resize(MAX_LEVEL as usize + 1, 0.5);
-        for (l, r) in [(VETERAN, record), (ACE, vs_ace)]
-            .into_iter()
-            .chain((ACE + 1..).zip(tops.iter().copied()))
-        {
-            let s = &mut st.bot_scores[l as usize];
+        for (i, r) in &all {
+            let s = &mut st.bot_scores[*i];
             *s = 0.8 * *s + 0.2 * (r.win + 0.5 * r.draw);
         }
-        if cfg.bot_focus > 0.0 && st.generation.is_multiple_of(50) {
+        if cfg.bot_focus > 0.0 && cfg.rules == Rules::Robocode && st.generation.is_multiple_of(50) {
+            let scores: Vec<String> = Sparring::ALL
+                .iter()
+                .enumerate()
+                .map(|(k, s)| format!("{} {:.2}", s.name(), st.bot_scores[k]))
+                .collect();
+            let _ = tx.send(Msg::Log(format!(
+                "Gen {}: bot scores {}",
+                st.generation,
+                scores.join(", ")
+            )));
+        } else if cfg.bot_focus > 0.0 && st.generation.is_multiple_of(50) {
             let scores: Vec<String> = (cfg.mix_from.min(st.level)..=st.level)
                 .map(|l| format!("{} {:.2}", LEVELS[l as usize], st.bot_scores[l as usize]))
                 .collect();
@@ -746,7 +830,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         }
         let level = st.level;
         let mut promoted = None;
-        if st.level < cfg.top_level.min(MAX_LEVEL) {
+        if cfg.rules == Rules::Tanks && st.level < cfg.top_level.min(MAX_LEVEL) {
             let r = if st.level == VETERAN {
                 record
             } else if st.level == ACE {
@@ -794,10 +878,9 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             extra: rep.extra,
         };
         let m = model(&cfg, rep.champion, &stats);
-        // Champion selection on every bot from the veteran up, so it cannot
-        // specialise on one style.
-        let all: Vec<Record> = [record, vs_ace].into_iter().chain(tops).collect();
-        let score = all.iter().map(|r| r.win - r.loss).sum::<f32>() / all.len() as f32;
+        // Champion selection on every bot from the veteran up (or every
+        // sample bot), so it cannot specialise on one style.
+        let score = all.iter().map(|(_, r)| r.win - r.loss).sum::<f32>() / all.len() as f32;
         let mut log = None;
         if score > st.best_score {
             st.best_score = score;
@@ -811,14 +894,22 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 } else {
                     String::new()
                 };
-                log = Some(format!(
-                    "Gen {}: new best (veteran W {:.0}% L {:.0}%, ace W {:.0}% L {:.0}%{top}) saved",
-                    st.generation,
-                    record.win * 100.0,
-                    record.loss * 100.0,
-                    vs_ace.win * 100.0,
-                    vs_ace.loss * 100.0
-                ));
+                log = Some(match cfg.rules {
+                    Rules::Tanks => format!(
+                        "Gen {}: new best (veteran W {:.0}% L {:.0}%, ace W {:.0}% L {:.0}%{top}) saved",
+                        st.generation,
+                        record.win * 100.0,
+                        record.loss * 100.0,
+                        vs_ace.win * 100.0,
+                        vs_ace.loss * 100.0
+                    ),
+                    Rules::Robocode => format!(
+                        "Gen {}: new best (sample bots W {:.0}% L {:.0}%) saved",
+                        st.generation,
+                        record.win * 100.0,
+                        record.loss * 100.0
+                    ),
+                });
             }
         }
         let _ = m.save(&dir.join("latest.json"));

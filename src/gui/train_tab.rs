@@ -3,6 +3,7 @@
 
 use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL};
 use crate::nn::Arch;
+use crate::sim::Rules;
 use crate::train::{self, GenStats, Method, Msg, RunState, TrainConfig, TrainHandle, list_runs};
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
@@ -174,6 +175,18 @@ impl TrainTab {
                 ui.text_edit_singleline(&mut c.run_name);
             });
             let mut renamed = false;
+            egui::ComboBox::from_label("Rules")
+                .selected_text(c.rules.name())
+                .show_ui(ui, |ui| {
+                    for r in [Rules::Tanks, Rules::Robocode] {
+                        ui.selectable_value(&mut c.rules, r, r.name());
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Robocode: one-round duels under Robocode Tank Royale rules, against \
+                     ports of the official sample bots and the run's own past champions.",
+                );
             egui::ComboBox::from_label("Architecture")
                 .selected_text(c.arch.name())
                 .show_ui(ui, |ui| {
@@ -185,7 +198,7 @@ impl TrainTab {
                 .selected_text(c.method.name())
                 .show_ui(ui, |ui| {
                     for m in Method::ALL {
-                        let ok = m.supports(c.arch);
+                        let ok = m.supports(c.arch) && m.supports_rules(c.rules);
                         renamed |= ui
                             .add_enabled(ok, egui::Button::selectable(c.method == m, m.name()))
                             .clicked()
@@ -195,17 +208,37 @@ impl TrainTab {
                             };
                     }
                 });
-            if !c.method.supports(c.arch) {
-                c.method = Method::ALL
+            if (!c.method.supports(c.arch) || !c.method.supports_rules(c.rules))
+                && let Some(m) = Method::ALL
                     .into_iter()
-                    .find(|m| m.supports(c.arch))
-                    .unwrap();
+                    .find(|m| m.supports(c.arch) && m.supports_rules(c.rules))
+            {
+                c.method = m;
                 renamed = true;
             }
+            egui::ComboBox::from_label("Start from")
+                .selected_text(if c.init_model.is_empty() {
+                    "imitation / scratch".to_string()
+                } else {
+                    super::display_tab::model_label(c.init_model.as_ref())
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut c.init_model, String::new(), "imitation / scratch");
+                    for p in &self.champions {
+                        let s = p.display().to_string();
+                        let l = super::display_tab::model_label(p);
+                        ui.selectable_value(&mut c.init_model, s, l);
+                    }
+                })
+                .response
+                .on_hover_text("Fine-tune a saved champion instead (same architecture, or a GRU into GRU + clocks).");
             if renamed {
                 c.run_name = TrainConfig::default_run_name(c.arch, c.method);
             }
-            if c.arch != Arch::Neat {
+            if c.rules == Rules::Robocode {
+                ui.label(format!("{} parameters", c.arch.param_count()));
+                ui.label("No imitation under Robocode rules: pick a model to start from, or start from scratch.");
+            } else if c.arch != Arch::Neat {
                 ui.label(format!("{} parameters", c.arch.param_count()));
                 ui.checkbox(
                     &mut c.imitation.enabled,
@@ -504,7 +537,12 @@ impl TrainTab {
                         .color(Color32::GRAY),
                 );
             });
-        ui.label("Champion vs the veteran (%), and wins vs the ace");
+        let robocode = self.cfg.rules == Rules::Robocode;
+        ui.label(if robocode {
+            "Champion vs the sample bots (%)"
+        } else {
+            "Champion vs the veteran (%), and wins vs the ace"
+        });
         Plot::new("winrate")
             .height(h)
             .include_y(0.0)
@@ -523,10 +561,12 @@ impl TrainTab {
                     Line::new("loss", series(&|s| s.vs_scripted.loss as f64 * 100.0))
                         .color(Color32::LIGHT_RED),
                 );
-                p.line(
-                    Line::new("win vs ace", series(&|s| s.vs_ace.win as f64 * 100.0))
-                        .color(Color32::LIGHT_BLUE),
-                );
+                if !robocode {
+                    p.line(
+                        Line::new("win vs ace", series(&|s| s.vs_ace.win as f64 * 100.0))
+                            .color(Color32::LIGHT_BLUE),
+                    );
+                }
                 if self.history.iter().any(|s| s.level > ACE) {
                     p.line(
                         Line::new(

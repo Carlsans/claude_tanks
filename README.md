@@ -126,6 +126,12 @@ The app also plays by the rules of [Robocode Tank Royale](https://robocode.dev),
 | RamFire vs Crazy, 20 rounds | 20 – 0 | 20 – 0 |
 | TrackFire vs Corners, 20 rounds | 20 – 0 (score 3628 – 334) | 20 – 0 (score 3607 – 298) |
 
+**Training under Robocode rules:**
+- `rules=Robocode` (or *Rules: Robocode* in the Train tab) trains GA or ES networks in one-round Robocode duels. There is no imitation warm start; *Start from* fine-tunes a saved champion instead.
+- Opponents are the run's own past champions and built-in ports of five official sample bots: SpinBot, Walls, TrackFire, RamFire and Crazy (`src/royale/sparring.rs`). A small interpreter reproduces the Bot API's blocking commands and movement bookkeeping. The ports play like the originals: Walls vs SpinBot 15–15 (real 16–14), RamFire vs Crazy 30–0 (real 20–0).
+- Fitness is +1 for a win and −1 for a loss, plus shaping for bullet damage dealt minus taken. `best.json` is picked on the average win−loss against the five ports.
+- `royale_eval <model>` scores a model against each port and against the day champion. To meet the real bots, use the Robocode tab or `royale`.
+
 ```sh
 # Unpack sample-bots-Java-1.4.0.zip into bots/, then:
 cargo run --release --example royale -- rounds=10 bots/Walls bots/SpinBot
