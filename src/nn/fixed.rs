@@ -142,19 +142,19 @@ pub fn init_params(arch: Arch, rng: &mut Rng) -> Vec<f32> {
 #[inline]
 pub fn matvec_add(w: &[f32], x: &[f32], y: &mut [f32]) {
     let cols = x.len();
-    let split = cols - cols % 8;
+    let (x8, x_rest) = x.as_chunks::<8>();
     for (r, yr) in y.iter_mut().enumerate() {
-        let row = &w[r * cols..(r + 1) * cols];
+        let (w8, w_rest) = w[r * cols..(r + 1) * cols].as_chunks::<8>();
         let mut acc = [0.0f32; 8];
-        for (rc, xc) in row[..split].chunks_exact(8).zip(x[..split].chunks_exact(8)) {
+        for (wc, xc) in w8.iter().zip(x8) {
             for l in 0..8 {
-                acc[l] += rc[l] * xc[l];
+                acc[l] += wc[l] * xc[l];
             }
         }
         let mut sum =
             ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]));
-        for c in split..cols {
-            sum += row[c] * x[c];
+        for (wv, xv) in w_rest.iter().zip(x_rest) {
+            sum += wv * xv;
         }
         *yr += sum;
     }
