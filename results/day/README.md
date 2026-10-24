@@ -22,6 +22,8 @@
 | D2 | Control | Same start and settings, no league (70% scripted, 30% own hall of fame, as in E11) | 2 h, 8 threads, in parallel |
 | D3 | Training against the stronger bots makes the network more robust | From D2 latest. Scripted opponents: the veteran, ace, hunter, brawler and stalker in equal parts (70%), plus own hall of fame | 2 h, 8 threads |
 | D4 | Leaving the veteran out of the mix helps | As D3, but only the ace, hunter, brawler and stalker | 2 h, 8 threads, in parallel |
+| R3a | A network type built for this game does better: a GRU-32 plus 16 clocks (leaky units with fixed time constants from 0.1 s to 30 s) and a direct input-to-output path. The bots run on timers (the hunter holds its course 4.7 s after a dodge), which a plain GRU has to build from its gates | From D3 ema, copied into GRU + clocks unchanged (`init_model`). D3 recipe | 2 h, 8 threads, CPU |
+| R3b | Control | From D3 ema, plain GRU-32, same recipe and seed | 2 h, 8 threads, CPU, in parallel |
 
 Both runs start with the shaping weight already at its final value (0.15), since they continue a trained network.
 
@@ -37,7 +39,13 @@ Win−loss points over 1000 fresh matches against each opponent (night champion'
 | D1 league, ema | +12.7 | +16.3 | **+24.0** | **+3.5** | −10.7 | −7.4 | −17.8 |
 | D2 control, best | +22.8 | +18.8 | +17.9 | −7.9 | −12.3 | −8.3 | −17.0 |
 | D2 control, latest | **+23.6** | **+21.3** | +21.5 | −0.1 | −9.2 | **−5.9** | −17.8 |
-| D2 control, ema | +20.5 | +19.6 | +18.4 | +0.6 | **−7.2** | −7.9 | −17.6 |
+| D2 control, ema | +20.5 | +19.6 | +18.4 | +0.6 | −7.2 | −7.9 | −17.6 |
+| D3 all bots, best | +14.3 | +18.5 | +20.4 | +0.5 | −6.9 | −5.0 | −14.2 |
+| D3 all bots, latest | +20.6 | +17.3 | +17.4 | +0.3 | −1.4 | −2.2 | −11.7 |
+| D3 all bots, ema | +18.1 | +20.2 | +18.5 | +0.3 | **+6.0** | **+3.0** | **−8.5** |
+| D4 strong bots only, best | +6.9 | +11.3 | +7.2 | −2.8 | +0.2 | −5.0 | −15.6 |
+| D4 strong bots only, latest | +11.0 | +22.0 | +20.1 | +0.9 | −5.7 | −10.4 | −14.4 |
+| D4 strong bots only, ema | +16.3 | +20.3 | +17.2 | −1.4 | −0.3 | −6.9 | −15.7 |
 
 The night champion's hunter/brawler/stalker figures come from the 1000-match round robin in the main README.
 
@@ -47,3 +55,6 @@ The night champion's hunter/brawler/stalker figures come from the 1000-match rou
 | D2 | The E11 recipe continued 2 h, shaping started at its final weight. Much better against the veteran (+8.8 → +23.6), ace and reference a little better; head-to-head against the champion even | **Worked a little.** Better scorecard, but not a stronger duellist against its parent |
 | EMA | The moving average of the weights scores like the latest snapshot (within ±3 points) | **Neutral.** Kept: it costs nothing |
 | Bots | Three stronger scripted bots (hunter, brawler, stalker). Every network loses to them, the night champion by 15–24 points | Next: train against them (D3, D4) |
+| D3 | From D2 latest, scripted opponents drawn from all five bots. The weight average gains 13–15 points against each new bot (hunter −7.2 → +6.0, brawler −7.9 → +3.0, stalker −17.6 → −8.5) and keeps its lead over the veteran, the ace and the reference. Mean over the six opponents other than the champion: +9.6 (night champion −1.8, D2 latest +5.6). Head-to-head against the champion: even (+0.3, a third of the matches drawn) | **Worked.** Best network so far against the field. All models published in [`models/day/`](../../models/day) |
+| D4 | As D3 without the veteran. Better than D2 against the hunter, but it loses ground against the veteran (+6.9 to +16.3) and the stalker | **Worse than D3.** Keep the veteran in the mix |
+| EMA | In D3 the weight average beats the latest snapshot by 4–7 points against each new bot | **Helps here.** Both D3 and D4 favour it |
