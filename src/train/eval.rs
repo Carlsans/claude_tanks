@@ -362,6 +362,18 @@ pub struct Record {
     pub loss: f32,
 }
 
+impl Record {
+    /// Average of several records (all zero when there are none).
+    pub fn mean(rs: &[Record]) -> Record {
+        let n = rs.len().max(1) as f32;
+        Record {
+            win: rs.iter().map(|r| r.win).sum::<f32>() / n,
+            draw: rs.iter().map(|r| r.draw).sum::<f32>() / n,
+            loss: rs.iter().map(|r| r.loss).sum::<f32>() / n,
+        }
+    }
+}
+
 pub fn vs_scripted(
     make: &(dyn Fn() -> Box<dyn Controller> + Sync),
     matches: usize,

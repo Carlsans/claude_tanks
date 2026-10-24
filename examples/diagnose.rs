@@ -1,14 +1,14 @@
 //! Play statistics of a pilot vs the veteran bot: `diagnose [model.json|-|ace] [matches]`
-//! (no model or `-` = the veteran itself, `ace` = the strongest scripted level).
+//! (no model or `-` = the veteran itself, `ace` = the ace bot).
 use claude_tanks::bots::ScriptedBot;
-use claude_tanks::bots::scripted::{MAX_LEVEL, VETERAN};
+use claude_tanks::bots::scripted::{ACE, VETERAN};
 use claude_tanks::nn::ModelFile;
 use claude_tanks::sim::Terrain;
 use claude_tanks::sim::world::{Controller, run_match};
 
 fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| "-".into());
-    let level = if arg == "ace" { MAX_LEVEL } else { VETERAN };
+    let level = if arg == "ace" { ACE } else { VETERAN };
     let path = Some(arg).filter(|p| p != "-" && p != "ace");
     let model = path
         .as_ref()

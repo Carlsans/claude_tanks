@@ -8,7 +8,7 @@ pub mod imitation;
 pub mod neat_evo;
 pub mod ppo;
 
-use crate::bots::scripted::{LEVELS, MAX_LEVEL, VETERAN};
+use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, Brain, Genes, ModelFile, models_dir};
 use crate::rng::Rng;
 use crossbeam_channel::{Receiver, Sender};
@@ -73,6 +73,13 @@ pub struct TrainConfig {
     /// Start from this saved model (same architecture) instead of imitation.
     #[serde(default)]
     pub init_model: String,
+    /// Curriculum level to start at (e.g. `MAX_LEVEL` to fine-tune a trained
+    /// model against the full mix of bots from the veteran up).
+    #[serde(default)]
+    pub start_level: u8,
+    /// Highest curriculum level (the newer bots can be left out).
+    #[serde(default = "max_level")]
+    pub top_level: u8,
     /// Fraction of opponents that are the scripted bot (rest: league and hall of fame).
     pub scripted_share: f32,
     pub hof_size: usize,
@@ -107,6 +114,10 @@ fn ema_default() -> f32 {
     0.99
 }
 
+fn max_level() -> u8 {
+    MAX_LEVEL
+}
+
 impl Default for TrainConfig {
     fn default() -> Self {
         TrainConfig {
@@ -123,6 +134,8 @@ impl Default for TrainConfig {
             max_seconds: 0.0,
             use_gpu: true,
             init_model: String::new(),
+            start_level: 0,
+            top_level: MAX_LEVEL,
             scripted_share: 0.5,
             hof_size: 20,
             league: Vec::new(),
@@ -206,6 +219,10 @@ pub struct GenStats {
     /// Champion vs the ace on the same benchmark set.
     #[serde(default)]
     pub vs_ace: Record,
+    /// Champion vs the bots above the ace that the curriculum has reached
+    /// (average record; empty before then).
+    #[serde(default)]
+    pub vs_top: Record,
     /// Method-specific numbers (species, losses, network size...).
     pub extra: Vec<(String, f32)>,
 }
@@ -559,6 +576,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 })
             });
             let trainer = Trainer::new(&cfg, &mut rng, init);
+            let level = cfg.start_level.min(cfg.top_level.min(MAX_LEVEL));
             let _ = tx.send(Msg::Log(format!(
                 "Started {} ({} / {}, {} params)",
                 cfg.run_name,
@@ -574,7 +592,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 rng,
                 hof: Vec::new(),
                 best_score: f32::NEG_INFINITY,
-                level: 0,
+                level,
                 history: Vec::new(),
                 trainer,
                 ema: None,
@@ -653,13 +671,25 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let make =
             || -> Box<dyn crate::sim::world::Controller> { Box::new(Brain::new(arch, &champ)) };
         let (record, mut eval_ticks) = eval::vs_scripted(&make, cfg.eval_matches, VETERAN);
-        let (vs_ace, t) = eval::vs_scripted(&make, cfg.eval_matches, MAX_LEVEL);
+        let (vs_ace, t) = eval::vs_scripted(&make, cfg.eval_matches, ACE);
         eval_ticks += t;
+        // Every bot above the ace that the curriculum has reached.
+        let tops: Vec<Record> = (ACE + 1..=st.level)
+            .map(|l| {
+                let (r, t) = eval::vs_scripted(&make, cfg.eval_matches, l);
+                eval_ticks += t;
+                r
+            })
+            .collect();
         let level = st.level;
         let mut promoted = None;
-        if st.level < MAX_LEVEL {
+        if st.level < cfg.top_level.min(MAX_LEVEL) {
             let r = if st.level == VETERAN {
                 record
+            } else if st.level == ACE {
+                vs_ace
+            } else if st.level > ACE {
+                tops[(st.level - ACE - 1) as usize]
             } else {
                 let (r, t) = eval::vs_scripted(&make, cfg.eval_matches, st.level);
                 eval_ticks += t;
@@ -686,6 +716,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             st.hof.remove(k);
         }
 
+        let vs_top = Record::mean(&tops);
         let stats = GenStats {
             generation: st.generation,
             steps: st.steps,
@@ -696,17 +727,29 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             level,
             vs_scripted: record,
             vs_ace,
+            vs_top,
             extra: rep.extra,
         };
         let m = model(&cfg, rep.champion, &stats);
-        // Champion selection on both bots, so it cannot specialise on one style.
-        let score = 0.5 * ((record.win - record.loss) + (vs_ace.win - vs_ace.loss));
+        // Champion selection on every bot from the veteran up, so it cannot
+        // specialise on one style.
+        let all: Vec<Record> = [record, vs_ace].into_iter().chain(tops).collect();
+        let score = all.iter().map(|r| r.win - r.loss).sum::<f32>() / all.len() as f32;
         let mut log = None;
         if score > st.best_score {
             st.best_score = score;
             if m.save(&dir.join("best.json")).is_ok() {
+                let top = if level > ACE {
+                    format!(
+                        ", stronger bots W {:.0}% L {:.0}%",
+                        vs_top.win * 100.0,
+                        vs_top.loss * 100.0
+                    )
+                } else {
+                    String::new()
+                };
                 log = Some(format!(
-                    "Gen {}: new best (veteran W {:.0}% L {:.0}%, ace W {:.0}% L {:.0}%) saved",
+                    "Gen {}: new best (veteran W {:.0}% L {:.0}%, ace W {:.0}% L {:.0}%{top}) saved",
                     st.generation,
                     record.win * 100.0,
                     record.loss * 100.0,

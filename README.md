@@ -62,7 +62,23 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 **The scripted bots:**
 - The **veteran** is the fixed yardstick.
 - The **ace** is stronger. It reads the beam exactly, compensates turret and radar for the hull's turn, swings the turret with the radar to sweep twice as fast, strafes across the line of sight, and reverses whenever an enemy shell appears in its beam. It beats the veteran 67/8/24.
-- Both use exactly the networks' 34 inputs.
+- Three stronger bots share the ace's aim and radar, with a different *style* each:
+  - The **hunter** drives to where the enemy was last seen, steering around walls, instead of wandering. It closes in from far away. It changes direction less often: after dodging a shell it holds its course for over 4 s.
+  - The **brawler** moves like the hunter but fights up close.
+  - The **stalker** dodges only the first shell and then holds its course, and takes only clean shots.
+  - Tuned against the night's networks with `cargo run --release --example bots`. The decisive setting was the long hold after a dodge: the networks had learned to expect the ace's quick reversals.
+- All of them use exactly the networks' 34 inputs.
+
+Round robin, 1000 matches per pairing (row's win/draw/loss %):
+
+| | veteran | ace | hunter | brawler | stalker | night champion | mean W−L |
+|---|---|---|---|---|---|---|---|
+| veteran | – | 29/9/62 | 20/3/76 | 32/4/64 | 24/4/72 | 38/12/50 | −36.1 |
+| ace | 62/9/29 | – | 41/10/49 | 57/5/38 | 49/7/44 | 30/23/46 | +6.6 |
+| **hunter** | 76/3/20 | 49/10/41 | – | 65/2/33 | 54/3/43 | 53/9/38 | **+24.7** |
+| brawler | 64/4/32 | 38/5/57 | 33/2/65 | – | 41/3/57 | 54/6/40 | −3.9 |
+| stalker | 72/4/24 | 44/7/49 | 43/3/54 | 57/3/41 | – | 57/10/33 | +14.1 |
+| night champion | 50/12/38 | 46/23/30 | 38/9/53 | 40/6/54 | 33/10/57 | – | −5.3 |
 
 **Imitation warm start** (on by default for MLP, Elman and GRU):
 - Before training, the net clones a scripted teacher (the ace by default) from demonstrations, with DAgger rounds: the net drives and the teacher labels the states it visits.
@@ -74,9 +90,9 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 All methods share the same training loop:
 - **Self-play:** opponents are drawn from a hall of fame of past champions and from a scripted bot.
 - **League:** `league` lists saved models of any architecture that join the opponents as fixed sparring partners (`league_share` of the non-scripted matches). In the GUI, tick champions under *Opponents & shaping*.
-- **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie*, a *veteran* and finally an *ace*. It moves up a level once the champion wins at least 55% of its matches against the current level. At the top, the scripted opponents mix the veteran and the ace: training against the ace alone makes networks forget the veteran.
+- **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie*, a *veteran*, an *ace*, a *hunter*, a *brawler* and finally a *stalker*. It moves up a level once the champion wins at least 55% of its matches against the current level. Past the veteran, the scripted opponents mix every level from the veteran up to the current one: training against one bot alone makes networks forget the others. `start_level` starts a run at a given level (for example the top, to fine-tune a trained model against the whole mix), and `top_level` caps the curriculum.
 - **Shaping:** small rewards for tracking the enemy on radar, pointing the gun at it, near-misses and survival. The shaping weight anneals over training. PPO uses potential-based shaping, which leaves the optimal policy unchanged.
-- **Scoring:** after every generation, the champion plays a fixed set of matches against the veteran and the ace. `best.json` is the snapshot with the best average win−loss against both.
+- **Scoring:** after every generation, the champion plays a fixed set of matches against the veteran, the ace and every stronger bot the curriculum has reached. `best.json` is the snapshot with the best average win−loss against all of them.
 - **Fine-tuning:** `init_model` starts a run from any saved model of the same architecture.
 - **Weight averaging (ES):** the run also keeps an exponential moving average of the weights (`ema_decay`, default 0.99) and saves it as `ema.json`.
 
@@ -108,7 +124,8 @@ cargo run --release --example imitate -- gru 20          # imitation only, then 
 cargo run --release --example diagnose -- models/champions/gru_es.json   # play statistics vs the veteran
 cargo run --release --example bench                      # simulation speed per architecture
 cargo run --release --example gpu_bench                  # one generation on CPU vs GPU
-cargo run --release --example evaluate -- <model> 1000   # scorecard vs veteran, ace, reference, champion
+cargo run --release --example evaluate -- <model> 1000   # scorecard vs every bot from the veteran up, the reference and the champion
+cargo run --release --example bots -- 1000 veteran ace hunter <model.json>   # round robin; also "rows vs columns" and custom styles
 cargo run --release --example tournament -- 1000 out A=a.json B=b.json   # round robin + Elo, with both bots
 cargo test --release
 ```

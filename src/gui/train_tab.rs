@@ -1,7 +1,7 @@
 //! Train mode: configure a run, start/pause/stop/resume it, follow progress plots.
 //! No battles are rendered here; use the Display tab to watch a saved pilot.
 
-use crate::bots::scripted::{LEVELS, MAX_LEVEL};
+use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL};
 use crate::nn::Arch;
 use crate::train::{self, GenStats, Method, Msg, RunState, TrainConfig, TrainHandle, list_runs};
 use eframe::egui::{self, Color32, RichText};
@@ -287,6 +287,18 @@ impl TrainTab {
                 }
             });
             ui.collapsing("Opponents & shaping", |ui| {
+                for (label, level) in [
+                    ("start at level", &mut c.start_level),
+                    ("top level", &mut c.top_level),
+                ] {
+                    egui::ComboBox::from_label(label)
+                        .selected_text(LEVELS[(*level).min(MAX_LEVEL) as usize])
+                        .show_ui(ui, |ui| {
+                            for l in 0..=MAX_LEVEL {
+                                ui.selectable_value(level, l, LEVELS[l as usize]);
+                            }
+                        });
+                }
                 ui.add(egui::Slider::new(&mut c.scripted_share, 0.0..=1.0).text("scripted share"));
                 ui.add(egui::Slider::new(&mut c.hof_size, 1..=100).text("hall of fame size"));
                 ui.add(
@@ -504,6 +516,15 @@ impl TrainTab {
                     Line::new("win vs ace", series(&|s| s.vs_ace.win as f64 * 100.0))
                         .color(Color32::LIGHT_BLUE),
                 );
+                if self.history.iter().any(|s| s.level > ACE) {
+                    p.line(
+                        Line::new(
+                            "win vs stronger bots",
+                            series(&|s| s.vs_top.win as f64 * 100.0),
+                        )
+                        .color(Color32::from_rgb(200, 140, 255)),
+                    );
+                }
             });
         let extras: Vec<String> = self
             .history

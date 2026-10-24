@@ -1,9 +1,9 @@
-//! Round-robin between saved models and the two scripted bots:
+//! Round-robin between saved models and the scripted bots from the veteran up:
 //! `tournament <matches per pairing> <out stem> <label>=<model.json> ...`.
 //! Writes `<out stem>.json` (labels, score matrix, Elo) and `<out stem>.md`.
 //! Elo is anchored at 1000 for the veteran.
 use claude_tanks::bots::ScriptedBot;
-use claude_tanks::bots::scripted::{MAX_LEVEL, VETERAN};
+use claude_tanks::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use claude_tanks::nn::ModelFile;
 use claude_tanks::sim::world::Controller;
 use claude_tanks::train::benchmark::fit_elo;
@@ -35,8 +35,15 @@ fn main() {
         labels.push(label.to_string());
         pilots.push(Pilot::Model(ModelFile::load(path.as_ref()).expect(path)));
     }
-    labels.push("Ace (scripted)".into());
-    pilots.push(Pilot::Bot(MAX_LEVEL));
+    for l in ACE..=MAX_LEVEL {
+        let name = LEVELS[l as usize];
+        labels.push(format!(
+            "{}{} (scripted)",
+            name[..1].to_uppercase(),
+            &name[1..]
+        ));
+        pilots.push(Pilot::Bot(l));
+    }
     labels.push("Veteran (scripted)".into());
     pilots.push(Pilot::Bot(VETERAN));
 

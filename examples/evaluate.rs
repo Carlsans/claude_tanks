@@ -1,9 +1,9 @@
 //! Scorecard for one model: `evaluate <model.json> [matches] [label] [results dir]`.
-//! Plays the veteran, the ace, the reference model and the current champion on
-//! fresh terrains (never used in training evaluation), prints one line, and
+//! Plays the veteran, the ace, the reference model, the current champion and
+//! the stronger bots (hunter, brawler, stalker) on fresh terrains (never used in training evaluation), prints one line, and
 //! appends a JSON record to `<results dir>/scores.jsonl` (default `results/night`).
 use claude_tanks::bots::ScriptedBot;
-use claude_tanks::bots::scripted::{MAX_LEVEL, VETERAN};
+use claude_tanks::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use claude_tanks::nn::ModelFile;
 use claude_tanks::sim::Terrain;
 use claude_tanks::sim::world::{Controller, run_match};
@@ -56,12 +56,23 @@ fn main() {
     );
     let ace = play(
         &me,
-        &|s| Box::new(ScriptedBot::with_level(s, MAX_LEVEL)),
+        &|s| Box::new(ScriptedBot::with_level(s, ACE)),
         matches,
         8_000_000,
     );
     let refr = play(&me, &|_| Box::new(reference.brain()), matches, 9_000_000);
     let champ = play(&me, &|_| Box::new(champion.brain()), matches, 10_000_000);
+    let tops: Vec<(u8, Record)> = (ACE + 1..=MAX_LEVEL)
+        .map(|l| {
+            let r = play(
+                &me,
+                &|s| Box::new(ScriptedBot::with_level(s, l)),
+                matches,
+                10_000_000 + l as u64 * 1_000_000,
+            );
+            (l, r)
+        })
+        .collect();
 
     let pct = |r: &Record| {
         format!(
@@ -71,14 +82,18 @@ fn main() {
             r.loss * 100.0
         )
     };
+    let top_txt: String = tops
+        .iter()
+        .map(|(l, r)| format!("  vs {} {}", LEVELS[*l as usize], pct(r)))
+        .collect();
     println!(
-        "{label}: vs veteran {}  vs ace {}  vs reference {}  vs champion {}  (W/D/L %, {matches} matches each)",
+        "{label}: vs veteran {}  vs ace {}  vs reference {}  vs champion {}{top_txt}  (W/D/L %, {matches} matches each)",
         pct(&vet),
         pct(&ace),
         pct(&refr),
         pct(&champ)
     );
-    let rec = serde_json::json!({
+    let mut rec = serde_json::json!({
         "label": label,
         "model": path,
         "arch": me.arch.name(),
@@ -91,6 +106,9 @@ fn main() {
         "vs_champion": champ,
         "time": claude_tanks::train::timestamp(),
     });
+    for (l, r) in &tops {
+        rec[format!("vs_{}", LEVELS[*l as usize])] = serde_json::json!(r);
+    }
     let dir = std::path::Path::new(out_dir);
     let _ = std::fs::create_dir_all(dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()

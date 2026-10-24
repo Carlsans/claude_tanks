@@ -227,13 +227,13 @@ fn scripted_bots_actually_fight() {
 
 #[test]
 fn ace_beats_veteran() {
-    use claude_tanks::bots::scripted::MAX_LEVEL;
+    use claude_tanks::bots::scripted::ACE;
     let mut w = [0; 3];
     for seed in 0..100 {
         let r = run_match(
             Terrain::generate(seed, (seed % 11) as f32 / 10.0),
             seed % 2 == 1,
-            &mut ScriptedBot::with_level(seed, MAX_LEVEL),
+            &mut ScriptedBot::with_level(seed, ACE),
             &mut ScriptedBot::new(seed + 99),
         );
         w[r.winner.unwrap_or(2)] += 1;
@@ -245,4 +245,29 @@ fn ace_beats_veteran() {
         w[1],
         w[2]
     );
+}
+
+#[test]
+fn stronger_bots_beat_veteran() {
+    use claude_tanks::bots::scripted::{ACE, LEVELS, MAX_LEVEL};
+    for level in ACE + 1..=MAX_LEVEL {
+        let mut w = [0; 3];
+        for seed in 0..100 {
+            let r = run_match(
+                Terrain::generate(seed, (seed % 11) as f32 / 10.0),
+                seed % 2 == 1,
+                &mut ScriptedBot::with_level(seed, level),
+                &mut ScriptedBot::new(seed + 99),
+            );
+            w[r.winner.unwrap_or(2)] += 1;
+        }
+        assert!(
+            w[0] > w[1] + 15,
+            "{} {} veteran {} draws {}",
+            LEVELS[level as usize],
+            w[0],
+            w[1],
+            w[2]
+        );
+    }
 }

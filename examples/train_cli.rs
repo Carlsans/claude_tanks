@@ -39,7 +39,7 @@ fn main() {
     for m in h.msg.iter() {
         match m {
             Msg::Stats(s) => println!(
-                "gen {:4} L{} steps {:>11} {:6.1}s best {:+.3} mean {:+.3} vs veteran W{:3.0}% D{:3.0}% L{:3.0}% ace W{:3.0}% L{:3.0}% {:?}",
+                "gen {:4} L{} steps {:>11} {:6.1}s best {:+.3} mean {:+.3} vs veteran W{:3.0}% D{:3.0}% L{:3.0}% ace W{:3.0}% L{:3.0}% stronger W{:3.0}% L{:3.0}% {:?}",
                 s.generation,
                 s.level,
                 s.steps,
@@ -51,6 +51,8 @@ fn main() {
                 s.vs_scripted.loss * 100.0,
                 s.vs_ace.win * 100.0,
                 s.vs_ace.loss * 100.0,
+                s.vs_top.win * 100.0,
+                s.vs_top.loss * 100.0,
                 s.extra
             ),
             Msg::Log(l) => println!("{l}"),

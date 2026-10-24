@@ -4,7 +4,7 @@
 use super::eval::{Record, head_to_head};
 use super::{GenStats, Method, Msg, TrainConfig, spawn};
 use crate::bots::ScriptedBot;
-use crate::bots::scripted::{MAX_LEVEL, VETERAN};
+use crate::bots::scripted::{ACE, VETERAN};
 use crate::nn::{Arch, ModelFile, models_dir};
 use crate::sim::world::Controller;
 use crossbeam_channel::{Receiver, Sender};
@@ -273,7 +273,7 @@ fn run(cfg: BenchConfig, tx: &Sender<BenchMsg>, stop: &Receiver<()>) {
     // The veteran goes last: the Elo fit anchors the last contestant at 1000.
     contestants.push(Contestant {
         name: "Scripted bot (ace)".into(),
-        level: Some(MAX_LEVEL),
+        level: Some(ACE),
         ..Default::default()
     });
     contestants.push(Contestant {

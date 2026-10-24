@@ -2,7 +2,7 @@
 //! followed by DAgger rounds (the network drives, the scripted bot labels).
 
 use crate::bots::ScriptedBot;
-use crate::bots::scripted::{LEVELS, MAX_LEVEL};
+use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL};
 use crate::nn::Arch;
 use crate::nn::fixed::{FixedNet, Layout, N_IN, N_OUT, init_params};
 use crate::nn::grad::{last_hidden, seq_backward, seq_forward};
@@ -28,7 +28,7 @@ impl Default for ImitationParams {
     fn default() -> Self {
         ImitationParams {
             enabled: true,
-            teacher: MAX_LEVEL,
+            teacher: ACE,
             matches: 300,
             epochs: 20,
             dagger_rounds: 3,

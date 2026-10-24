@@ -2,7 +2,7 @@
 
 use super::arena_view::{self, Effect, Overlays, TANK_COLORS};
 use crate::bots::ScriptedBot;
-use crate::bots::scripted::{LEVELS, MAX_LEVEL, VETERAN};
+use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{ModelFile, list_models};
 use crate::sim::world::{Action, Controller, Event, World};
 use crate::sim::*;
@@ -82,7 +82,7 @@ pub struct DisplayTab {
 impl Default for DisplayTab {
     fn default() -> Self {
         let mut d = DisplayTab {
-            pilots: [Pilot::Scripted(MAX_LEVEL), Pilot::Scripted(VETERAN)],
+            pilots: [Pilot::Scripted(ACE), Pilot::Scripted(VETERAN)],
             models: list_models(),
             seed: 1,
             density: 0.4,
@@ -261,7 +261,7 @@ impl DisplayTab {
                     .width(220.0)
                     .selected_text(self.pilots[side].label())
                     .show_ui(ui, |ui| {
-                        for l in [VETERAN, MAX_LEVEL] {
+                        for l in VETERAN..=MAX_LEVEL {
                             let p = Pilot::Scripted(l);
                             let label = p.label();
                             changed |= ui
