@@ -265,9 +265,10 @@ impl RoyaleTab {
         });
         if self.dirs.is_empty() {
             ui.label(
-                "Put bot directories here, e.g. the official sample bots \
-                 (sample-bots-Java from the Tank Royale releases; Java 11+ needed). \
-                 Classic Robocode robots run through the robocode-api-bridge.",
+                "Put bot directories here (or one level down), e.g. the official \
+                 sample bots (sample-bots-Java from the Tank Royale releases; Java 11+ \
+                 needed). Classic Robocode robot jars: run \
+                 scripts/import-classic-robots.sh (or .ps1) to wrap them into bots/classic.",
             );
             ui.hyperlink_to(
                 "Tank Royale releases",

@@ -116,6 +116,11 @@ The app also plays by the rules of [Robocode Tank Royale](https://robocode.dev),
 - `src/royale/` ports the official server's turn logic (the [Apache-2.0 source](https://github.com/robocode-dev/tank-royale), v1.4.0) and speaks its WebSocket protocol on port 7654, the official default.
 - Any Tank Royale bot can connect: Java, C#, Python, TypeScript. Classic Robocode `.jar` robots run through the official [robocode-api-bridge](https://github.com/robocode-dev/robocode-api-bridge).
 - A bot directory (`<Name>/<Name>.json` plus a script, a `.java` or a `.py` file) is started the way the official booter does it. The [official sample bots](https://github.com/robocode-dev/tank-royale/releases) work as they are.
+- **Classic Robocode robots** (`.jar` files from Robocode's `robots` folder or the RoboRumble): `scripts/import-classic-robots.sh <folder with jars>` wraps them into `bots/classic/` with the official [robocode-api-bridge](https://github.com/robocode-dev/robocode-api-bridge). The script downloads the bridge (pinned commit), compiles it with `javac` and runs its wrapper. It needs a JDK 11+.
+  - On Windows, use `scripts\import-classic-robots.ps1` instead. That version hasn't been run yet.
+  - Tested with Robocode 1.11.1's sample robots: classic Walls beat classic SpinBot 8–2 here, and the day champion beat classic Tracker 5–1.
+  - The bridge is in early development by its authors; robots that use Java internals or exotic class loading may not run.
+- The Robocode tab lists bot directories under its folder and one level down, so `bots/java/` and `bots/classic/` both show up under `bots`.
 - Our pilots join as local bots. They see only what a Royale bot sees (its own state, its own bullets and its events) and get it as our usual 34 inputs. A few inputs change meaning: own energy, gun heat, the enemy's energy, and "the enemy just fired" (judged by its energy drop, since Royale bots never see enemy bullets).
 
 **Checked against the official server** (same sample bots, rounds won):

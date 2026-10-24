@@ -486,15 +486,25 @@ impl BotDir {
         })
     }
 
-    /// All bot directories directly under `root`, by name.
+    /// All bot directories under `root`, and one level down (e.g. `bots/java/Walls`
+    /// and `bots/classic/sample.Walls`), by name.
     pub fn scan(root: &Path) -> Vec<BotDir> {
-        let mut v: Vec<BotDir> = std::fs::read_dir(root)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| BotDir::read(&e.path()))
-            .collect();
+        let dirs = |d: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(d)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        };
+        let mut v = Vec::new();
+        for d in dirs(root) {
+            match BotDir::read(&d) {
+                Some(b) => v.push(b),
+                None => v.extend(dirs(&d).iter().filter_map(|s| BotDir::read(s))),
+            }
+        }
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }

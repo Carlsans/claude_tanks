@@ -55,6 +55,12 @@ Win−loss points over 1000 fresh matches against each opponent (night champion'
 | R3b GRU-32 control, best | +20.1 | +18.9 | +15.9 | +3.2 | −2.9 | −7.0 | −12.1 |
 | R3b GRU-32 control, latest | +13.1 | +15.8 | +20.6 | −1.6 | −4.0 | −3.1 | −10.8 |
 | R3b GRU-32 control, ema | +10.7 | +22.8 | **+24.5** | +0.2 | **+6.1** | −2.6 | **−6.4** |
+| R4a bot focus, best | +9.2 | +15.8 | +17.8 | −2.5 | −4.7 | +1.1 | −11.1 |
+| R4a bot focus, latest | +12.2 | +18.5 | +15.1 | −9.4 | −5.2 | −2.1 | −16.6 |
+| R4a bot focus, ema | +11.0 | +16.3 | +15.7 | −6.8 | −7.5 | −2.1 | −16.4 |
+| R4b 64 matches, best | +19.8 | +19.3 | +21.6 | +3.1 | −1.3 | −0.5 | −14.2 |
+| R4b 64 matches, latest | +17.3 | **+23.2** | +20.5 | +3.4 | +3.4 | +5.1 | −12.0 |
+| R4b 64 matches, ema | +19.2 | +19.5 | +19.2 | **+4.2** | +2.4 | **+6.9** | −10.4 |
 
 The night champion's hunter/brawler/stalker figures come from the 1000-match round robin in the main README.
 
@@ -70,4 +76,6 @@ The night champion's hunter/brawler/stalker figures come from the 1000-match rou
 | R3a | D3 ema copied into GRU + clocks, 2 h more of the D3 recipe (1528 generations; the bigger network is 12% slower). Every snapshot is worse than its starting point: mean over the six non-champion opponents +2.6 (ema) against +9.5 for D3 ema, and −7.5 head-to-head against the night champion | **Failed.** The extra 2858 weights start at zero and ES grows them slowly and noisily; they cost strength instead of adding it |
 | R3b | Control: D3 ema continued as a plain GRU-32 (1741 generations). Mean +9.2 (ema), the same as its start | **No gain.** The D3 recipe has plateaued at this level |
 | Tournament | 1000 matches per pairing ([`tournament.md`](tournament.md)): stalker 1130, hunter 1125, **D3 ema 1094**, R3b ema 1091, R3a ema 1083, D2 latest 1083, night champion 1079, brawler 1079, ace 1074, veteran 1000 | D3 ema is the strongest network, 15 Elo above the night champion. Saved as [`models/champions/gru_es_day.json`](../../models/champions/gru_es_day.json). The stalker and the hunter remain stronger than every network |
+| R4a | Day champion, D3 recipe + `bot_focus=2` (1699 generations). Worse everywhere: mean +2.8 to +4.7, and −2.5 to −9.4 against the night champion | **Failed.** Chasing the bot it currently loses to makes the network forget the others |
+| R4b | Day champion, D3 recipe with 64 matches per candidate (917 generations, half as many). Mean +9.5 (ema), like its start, but ahead of the night champion (+3 to +4) | **Small gain.** Tournament ([`tournament_r4.md`](tournament_r4.md)): R4b ema 1107 Elo, R4b latest 1102, day champion 1096, night champion 1083, R4a ema 1080. Best network so far: [`models/day/r4b_m64_ema.json`](../../models/day/r4b_m64_ema.json) |
 | I1–I4 | Imitating the hunter from scratch. Mean win−loss over the six non-champion opponents: GRU-32 −39.4 (1 s window), −35.3 (8.5 s); GRU + clocks −38.6 (1 s), −41.0 (8.5 s). Every copy loses even to the veteran (−4 to −19); final imitation errors 0.83–0.88 for all four | **No difference.** Neither the clocks nor the longer window lets a network copy the hunter. The copy itself is the limit, not the network type. Pretrained weights in [`models/pretrained/`](../../models/pretrained) |
