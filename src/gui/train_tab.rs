@@ -445,7 +445,7 @@ impl TrainTab {
                         .color(Color32::GRAY),
                 );
             });
-        ui.label("Champion vs scripted veteran (%)");
+        ui.label("Champion vs the veteran (%), and wins vs the ace");
         Plot::new("winrate")
             .height(h)
             .include_y(0.0)
@@ -463,6 +463,10 @@ impl TrainTab {
                 p.line(
                     Line::new("loss", series(&|s| s.vs_scripted.loss as f64 * 100.0))
                         .color(Color32::LIGHT_RED),
+                );
+                p.line(
+                    Line::new("win vs ace", series(&|s| s.vs_ace.win as f64 * 100.0))
+                        .color(Color32::LIGHT_BLUE),
                 );
             });
         let extras: Vec<String> = self

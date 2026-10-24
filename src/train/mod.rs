@@ -70,6 +70,9 @@ pub struct TrainConfig {
     /// Batch GA/ES network evaluation on the GPU when one is available.
     #[serde(default = "yes")]
     pub use_gpu: bool,
+    /// Start from this saved model (same architecture) instead of imitation.
+    #[serde(default)]
+    pub init_model: String,
     /// Fraction of opponents that are the scripted bot (rest: hall of fame).
     pub scripted_share: f32,
     pub hof_size: usize,
@@ -105,6 +108,7 @@ impl Default for TrainConfig {
             max_generations: 0,
             max_seconds: 0.0,
             use_gpu: true,
+            init_model: String::new(),
             scripted_share: 0.5,
             hof_size: 20,
             shaping_start: 0.6,
@@ -182,6 +186,9 @@ pub struct GenStats {
     /// Curriculum level of the scripted training opponents.
     pub level: u8,
     pub vs_scripted: Record,
+    /// Champion vs the ace on the same benchmark set.
+    #[serde(default)]
+    pub vs_ace: Record,
     /// Method-specific numbers (species, losses, network size...).
     pub extra: Vec<(String, f32)>,
 }
@@ -359,7 +366,14 @@ fn opponents(cfg: &TrainConfig, hof: &[Genes], level: u8, rng: &mut Rng) -> Vec<
     (0..cfg.matches)
         .map(|_| {
             if hof.is_empty() || rng.chance(cfg.scripted_share) {
-                Opponent::Scripted(rng.next_u64(), level)
+                // Past the veteran, keep playing every level from the veteran up:
+                // training against the ace alone made nets forget the veteran.
+                let lvl = if level > VETERAN {
+                    VETERAN + rng.below((level - VETERAN + 1) as usize) as u8
+                } else {
+                    level
+                };
+                Opponent::Scripted(rng.next_u64(), lvl)
             } else {
                 // Favour recent champions.
                 let n = hof.len();
@@ -476,10 +490,29 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         }
         None => {
             let mut rng = Rng::new(cfg.seed);
-            let init = (cfg.imitation.enabled && cfg.arch != Arch::Neat).then(|| {
-                let _ = tx.send(Msg::Log("Imitation warm start...".into()));
-                imitation::pretrain_cached(cfg.arch, &cfg.imitation, &mut rng, &|l| {
-                    let _ = tx.send(Msg::Log(l));
+            let from_model = (!cfg.init_model.is_empty())
+                .then(|| ModelFile::load(cfg.init_model.as_ref()).ok())
+                .flatten()
+                .and_then(|m| match m.genes {
+                    Genes::Fixed(p) if m.arch == cfg.arch => Some(p),
+                    _ => None,
+                });
+            if !cfg.init_model.is_empty() {
+                let _ = tx.send(Msg::Log(match from_model {
+                    Some(_) => format!("Starting from {}", cfg.init_model),
+                    None => format!(
+                        "Cannot start from {}: not a {}",
+                        cfg.init_model,
+                        cfg.arch.name()
+                    ),
+                }));
+            }
+            let init = from_model.or_else(|| {
+                (cfg.imitation.enabled && cfg.arch != Arch::Neat).then(|| {
+                    let _ = tx.send(Msg::Log("Imitation warm start...".into()));
+                    imitation::pretrain_cached(cfg.arch, &cfg.imitation, &mut rng, &|l| {
+                        let _ = tx.send(Msg::Log(l));
+                    })
                 })
             });
             let trainer = Trainer::new(&cfg, &mut rng, init);
@@ -572,6 +605,8 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let make =
             || -> Box<dyn crate::sim::world::Controller> { Box::new(Brain::new(arch, &champ)) };
         let (record, mut eval_ticks) = eval::vs_scripted(&make, cfg.eval_matches, VETERAN);
+        let (vs_ace, t) = eval::vs_scripted(&make, cfg.eval_matches, MAX_LEVEL);
+        eval_ticks += t;
         let level = st.level;
         let mut promoted = None;
         if st.level < MAX_LEVEL {
@@ -612,19 +647,23 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             shaping: shaping.weight,
             level,
             vs_scripted: record,
+            vs_ace,
             extra: rep.extra,
         };
         let m = model(&cfg, rep.champion, &stats);
-        let score = record.win - record.loss;
+        // Champion selection on both bots, so it cannot specialise on one style.
+        let score = 0.5 * ((record.win - record.loss) + (vs_ace.win - vs_ace.loss));
         let mut log = None;
         if score > st.best_score {
             st.best_score = score;
             if m.save(&dir.join("best.json")).is_ok() {
                 log = Some(format!(
-                    "Gen {}: new best vs scripted (win {:.0}%, loss {:.0}%) saved",
+                    "Gen {}: new best (veteran W {:.0}% L {:.0}%, ace W {:.0}% L {:.0}%) saved",
                     st.generation,
                     record.win * 100.0,
-                    record.loss * 100.0
+                    record.loss * 100.0,
+                    vs_ace.win * 100.0,
+                    vs_ace.loss * 100.0
                 ));
             }
         }
