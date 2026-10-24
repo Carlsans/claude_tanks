@@ -254,7 +254,7 @@ impl TrainTab {
                 ui.checkbox(&mut c.use_gpu, "Use the GPU when faster")
                     .on_hover_text(format!(
                         "{}\nTimes both devices on the first generations and keeps the faster one.",
-                        crate::gpu::status()
+                        crate::gpu::status_if_ready()
                     ));
             }
             ui.horizontal(|ui| {

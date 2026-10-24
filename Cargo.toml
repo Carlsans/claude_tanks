@@ -20,3 +20,8 @@ default = ["gpu"]
 # Build with --no-default-features for a CPU-only binary; the default build
 # also falls back to the CPU at runtime when no GPU is found.
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+
+[[test]]
+name = "gpu_check"
+harness = false
+required-features = ["gpu"]

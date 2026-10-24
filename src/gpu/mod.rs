@@ -21,11 +21,76 @@ pub struct Gpu {
     pub name: String,
 }
 
-static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
+static GPU: OnceLock<Result<Gpu, String>> = OnceLock::new();
+static CHILD_CHECK: OnceLock<String> = OnceLock::new();
 
-/// The shared GPU, initialised on first use; `None` when no hardware adapter exists.
+/// The shared GPU, initialised on first use; `None` when no hardware adapter
+/// exists or the child-process check (see `check_in_child`) failed.
 pub fn get() -> Option<&'static Gpu> {
-    GPU.get_or_init(|| Gpu::new().ok()).as_ref()
+    GPU.get_or_init(|| {
+        if let Some(arg) = CHILD_CHECK.get() {
+            check_child(arg)?;
+        }
+        Gpu::new()
+    })
+    .as_ref()
+    .ok()
+}
+
+/// Makes `get` try the GPU in a child process (`<this program> <arg>`, which
+/// must call `child_main`) before setting it up here. Some drivers crash the
+/// whole process while wgpu sets up the adapter (an access violation, not a
+/// panic that could be caught), and the GUI must survive that.
+pub fn check_in_child(arg: &str) {
+    let _ = CHILD_CHECK.set(arg.into());
+}
+
+/// Body of the child process: set up the GPU, print its name, exit.
+pub fn child_main() -> ! {
+    match Gpu::new() {
+        Ok(g) => {
+            println!("{}", g.name);
+            std::process::exit(0)
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2)
+        }
+    }
+}
+
+fn check_child(arg: &str) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = Command::new(exe)
+        .arg(arg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("GPU check did not start: {e}"))?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) if st.success() => return Ok(()),
+            Ok(Some(st)) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                }
+                return Err(match st.code() {
+                    Some(2) => err.trim().to_string(),
+                    _ => format!("the GPU driver crashed during setup ({st})"),
+                });
+            }
+            Ok(None) if start.elapsed().as_secs() < 30 => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => {
+                let _ = child.kill();
+                return Err("the GPU setup hung".into());
+            }
+        }
+    }
 }
 
 /// Whether the GPU kernels cover this architecture.
@@ -33,10 +98,20 @@ pub fn supports(arch: Arch) -> bool {
     !matches!(arch, Arch::Neat | Arch::GruClock)
 }
 
-/// Human-readable adapter status.
+/// Status without setting the GPU up (cheap enough for every frame).
+pub fn status_if_ready() -> String {
+    match GPU.get() {
+        Some(_) => status(),
+        None => "GPU not checked yet: it is tested when a run starts.".into(),
+    }
+}
+
+/// Human-readable adapter status (sets the GPU up on first use).
 pub fn status() -> String {
-    match get() {
-        Some(g) => g.name.clone(),
+    get();
+    match GPU.get() {
+        Some(Ok(g)) => g.name.clone(),
+        Some(Err(e)) => format!("CPU only: {e}"),
         None => "no GPU found, CPU only".into(),
     }
 }

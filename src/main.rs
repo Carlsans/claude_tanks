@@ -2,6 +2,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() -> eframe::Result<()> {
+    // The GPU is first tried in a child process (this program with
+    // `--gpu-check`), so a driver crash during setup can't take the GUI down.
+    #[cfg(feature = "gpu")]
+    {
+        const GPU_CHECK: &str = "--gpu-check";
+        if std::env::args().nth(1).as_deref() == Some(GPU_CHECK) {
+            claude_tanks::gpu::child_main();
+        }
+        claude_tanks::gpu::check_in_child(GPU_CHECK);
+    }
     // Models and results live in relative folders. When launched from elsewhere
     // (file manager, desktop shortcut), use the ones shipped next to the binary.
     if !std::path::Path::new("models").exists()
