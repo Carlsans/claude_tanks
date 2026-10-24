@@ -85,16 +85,17 @@ Round robin, 1000 matches per pairing (row's win/draw/loss %):
 - Before training, the net clones a scripted teacher (the ace by default) from demonstrations, with DAgger rounds: the net drives and the teacher labels the states it visits.
 - GA, ES or PPO then fine-tune from there.
 - Pretrained weights are cached in `models/pretrained/`.
+- `bptt` sets the memory window: how many decisions back (default 32, about 1 s) the net learns to remember from the teacher. In the GUI it is the *memory window* slider.
 - Why it's needed: from scratch, nets learn very slowly. A diagnosis showed that a GA champion kept its radar on the enemy only 3% of the time, against 17% for the scripted bot, so it fired from stale information.
 - Cloning alone gets MLP-L and GRU to parity with the bot. ES fine-tuning then pushes a GRU past it.
 
 All methods share the same training loop:
 - **Self-play:** opponents are drawn from a hall of fame of past champions and from a scripted bot.
 - **League:** `league` lists saved models of any architecture that join the opponents as fixed sparring partners (`league_share` of the non-scripted matches). In the GUI, tick champions under *Opponents & shaping*.
-- **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie*, a *veteran*, an *ace*, a *hunter*, a *brawler* and finally a *stalker*. It moves up a level once the champion wins at least 55% of its matches against the current level. Past the veteran, the scripted opponents mix every level from the veteran up to the current one: training against one bot alone makes networks forget the others. `start_level` starts a run at a given level (for example the top, to fine-tune a trained model against the whole mix), `top_level` caps the curriculum and `mix_from` sets the lowest level of the mix.
+- **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie*, a *veteran*, an *ace*, a *hunter*, a *brawler* and finally a *stalker*. It moves up a level once the champion wins at least 55% of its matches against the current level. Past the veteran, the scripted opponents mix every level from the veteran up to the current one: training against one bot alone makes networks forget the others. `start_level` starts a run at a given level (for example the top, to fine-tune a trained model against the whole mix), `top_level` caps the curriculum and `mix_from` sets the lowest level of the mix. With `bot_focus` above 0, bots the champion scores worse against are drawn more often: each bot's weight is (1 − recent score)^`bot_focus`.
 - **Shaping:** small rewards for tracking the enemy on radar, pointing the gun at it, near-misses and survival. The shaping weight anneals over training. PPO uses potential-based shaping, which leaves the optimal policy unchanged.
 - **Scoring:** after every generation, the champion plays a fixed set of matches against the veteran, the ace and every stronger bot the curriculum has reached. `best.json` is the snapshot with the best average win−loss against all of them.
-- **Fine-tuning:** `init_model` starts a run from any saved model of the same architecture.
+- **Fine-tuning:** `init_model` starts a run from any saved model of the same architecture, or copies a GRU into GRU + clocks.
 - **Weight averaging (ES):** the run also keeps an exponential moving average of the weights (`ema_decay`, default 0.99) and saves it as `ema.json`.
 
 ## The GUI

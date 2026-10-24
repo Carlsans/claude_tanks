@@ -84,6 +84,11 @@ pub struct TrainConfig {
     /// current one.
     #[serde(default = "veteran")]
     pub mix_from: u8,
+    /// Draw the scripted bots the network loses to more often: each level's
+    /// weight is (1 - recent score)^bot_focus, with score = win + draw / 2.
+    /// 0 draws them evenly.
+    #[serde(default)]
+    pub bot_focus: f32,
     /// Fraction of opponents that are the scripted bot (rest: league and hall of fame).
     pub scripted_share: f32,
     pub hof_size: usize,
@@ -145,6 +150,7 @@ impl Default for TrainConfig {
             start_level: 0,
             top_level: MAX_LEVEL,
             mix_from: VETERAN,
+            bot_focus: 0.0,
             scripted_share: 0.5,
             hof_size: 20,
             league: Vec::new(),
@@ -301,6 +307,9 @@ pub struct RunState {
     /// Moving average of the ES weights (see `TrainConfig::ema_decay`).
     #[serde(default)]
     pub ema: Option<Vec<f32>>,
+    /// Recent score (win + draw / 2, smoothed) against each scripted level.
+    #[serde(default)]
+    pub bot_scores: Vec<f32>,
 }
 
 impl RunState {
@@ -428,6 +437,7 @@ fn opponents(
     hof: &[Genes],
     league: &[Opponent],
     level: u8,
+    bot_scores: &[f32],
     rng: &mut Rng,
 ) -> Vec<Opponent> {
     (0..cfg.matches)
@@ -436,7 +446,21 @@ fn opponents(
                 // Past the veteran, keep playing every level from `mix_from` up:
                 // training against the ace alone made nets forget the veteran.
                 let from = cfg.mix_from.min(level);
-                let lvl = if level > from {
+                let lvl = if level > from && cfg.bot_focus > 0.0 {
+                    let w: Vec<f32> = (from..=level)
+                        .map(|l| {
+                            let score = bot_scores.get(l as usize).copied().unwrap_or(0.5);
+                            (1.0 - score).max(0.02).powf(cfg.bot_focus)
+                        })
+                        .collect();
+                    let mut x = rng.f32() * w.iter().sum::<f32>();
+                    let mut k = 0;
+                    while k + 1 < w.len() && x >= w[k] {
+                        x -= w[k];
+                        k += 1;
+                    }
+                    from + k as u8
+                } else if level > from {
                     from + rng.below((level - from + 1) as usize) as u8
                 } else {
                     level
@@ -608,6 +632,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 history: Vec::new(),
                 trainer,
                 ema: None,
+                bot_scores: Vec::new(),
             }
         }
     };
@@ -661,7 +686,14 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
 
         let t0 = Instant::now();
         let shaping = cfg.shaping(st.generation);
-        let opps = opponents(&cfg, &st.hof, &league, st.level, &mut st.rng);
+        let opps = opponents(
+            &cfg,
+            &st.hof,
+            &league,
+            st.level,
+            &st.bot_scores,
+            &mut st.rng,
+        );
         let terrains = eval::terrains(&mut st.rng, cfg.matches, cfg.density);
         let use_gpu = device.pick();
         let t_step = Instant::now();
@@ -693,6 +725,25 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 r
             })
             .collect();
+        // Smoothed score against every bot evaluated this generation.
+        st.bot_scores.resize(MAX_LEVEL as usize + 1, 0.5);
+        for (l, r) in [(VETERAN, record), (ACE, vs_ace)]
+            .into_iter()
+            .chain((ACE + 1..).zip(tops.iter().copied()))
+        {
+            let s = &mut st.bot_scores[l as usize];
+            *s = 0.8 * *s + 0.2 * (r.win + 0.5 * r.draw);
+        }
+        if cfg.bot_focus > 0.0 && st.generation.is_multiple_of(50) {
+            let scores: Vec<String> = (cfg.mix_from.min(st.level)..=st.level)
+                .map(|l| format!("{} {:.2}", LEVELS[l as usize], st.bot_scores[l as usize]))
+                .collect();
+            let _ = tx.send(Msg::Log(format!(
+                "Gen {}: bot scores {}",
+                st.generation,
+                scores.join(", ")
+            )));
+        }
         let level = st.level;
         let mut promoted = None;
         if st.level < cfg.top_level.min(MAX_LEVEL) {

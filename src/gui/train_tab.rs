@@ -308,6 +308,8 @@ impl TrainTab {
                             }
                         });
                 }
+                ui.add(egui::Slider::new(&mut c.bot_focus, 0.0..=4.0).text("focus on bots it loses to"))
+                    .on_hover_text("Each bot is drawn with weight (1 - recent score)^focus. 0 draws them evenly.");
                 ui.add(egui::Slider::new(&mut c.scripted_share, 0.0..=1.0).text("scripted share"));
                 ui.add(egui::Slider::new(&mut c.hof_size, 1..=100).text("hall of fame size"));
                 ui.add(
