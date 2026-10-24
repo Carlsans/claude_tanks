@@ -1,5 +1,7 @@
-//! Imitation-only quality check: `imitate <arch> [epochs] [matches] [dagger] [lr]`, then play the veteran.
+//! Imitation-only quality check: `imitate <arch> [epochs] [matches] [dagger] [lr] [teacher] [bptt]`,
+//! then play the veteran. The teacher is a scripted level name or number.
 //! The weights are cached in `models/pretrained/` like a training run's warm start.
+use claude_tanks::bots::scripted::LEVELS;
 use claude_tanks::nn::{Arch, Brain, Genes};
 use claude_tanks::rng::Rng;
 use claude_tanks::train::eval::vs_scripted;
@@ -20,6 +22,15 @@ fn main() {
     }
     if let Some(v) = a.get(5) {
         p.lr = v.parse().unwrap();
+    }
+    if let Some(v) = a.get(6) {
+        p.teacher = LEVELS
+            .iter()
+            .position(|l| *l == v)
+            .map_or_else(|| v.parse().unwrap(), |l| l as u8);
+    }
+    if let Some(v) = a.get(7) {
+        p.bptt = v.parse().unwrap();
     }
     let t = std::time::Instant::now();
     let params = pretrain_cached(arch, &p, &mut Rng::new(1), &|l| println!("{l}"));

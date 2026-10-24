@@ -22,6 +22,9 @@ pub struct ImitationParams {
     pub epochs: usize,
     pub dagger_rounds: usize,
     pub lr: f32,
+    /// Decisions per backprop-through-time window: the longest span the
+    /// network can learn to remember from the teacher (32 ≈ 1 s).
+    pub bptt: usize,
 }
 
 impl Default for ImitationParams {
@@ -33,6 +36,7 @@ impl Default for ImitationParams {
             epochs: 20,
             dagger_rounds: 3,
             lr: 2e-3,
+            bptt: 32,
         }
     }
 }
@@ -130,7 +134,7 @@ fn train(arch: Arch, p: &mut [f32], data: &[Seq], params: &ImitationParams, rng:
                 .par_iter()
                 .map(|&i| {
                     let mut g = vec![0.0f32; n];
-                    let l = seq_grad(&layout, pr, &data[i], 32, &mut g);
+                    let l = seq_grad(&layout, pr, &data[i], params.bptt.max(1), &mut g);
                     (g, l, data[i].obs.len())
                 })
                 .reduce(
@@ -167,8 +171,13 @@ pub fn pretrain_cached(
     rng: &mut Rng,
     log: &dyn Fn(String),
 ) -> Vec<f32> {
+    // Names from before `bptt` existed stay valid for the default window.
+    let window = match params.bptt {
+        32 => String::new(),
+        b => format!("_b{b}"),
+    };
     let name = format!(
-        "{}_{}_m{}_e{}_d{}_lr{}.json",
+        "{}_{}_m{}_e{}_d{}_lr{}{window}.json",
         arch.short(),
         LEVELS[params.teacher.min(MAX_LEVEL) as usize].replace(' ', "_"),
         params.matches,

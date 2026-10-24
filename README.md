@@ -154,13 +154,15 @@ Its record over 1000 fresh matches against each opponent (`evaluate <model> 1000
 
 Final tournament, 1000 matches per pairing: night champion **1074** Elo, ace 1041, previous champion 1016, veteran 1000 ([`results/night/tournament.md`](results/night/tournament.md)).
 
-What made the difference:
+What made the night champion:
 - a stronger teacher to imitate;
 - mixing the veteran and the ace as opponents (training on the ace alone over-specializes);
 - selecting champions on both bots;
 - simply training longer.
 
 The architecture mattered little: GRU-32, GRU-64 and MLP-L land within a few Elo of each other with the same recipe.
+
+**Day run** (24 Oct 2026, [`results/day/`](results/day/README.md)): continuing from the night champion against all five bots gave the day champion [`models/champions/gru_es_day.json`](models/champions/gru_es_day.json). It is the first network to beat the hunter and the brawler, and it leads the night champion by 15 Elo (1094 vs 1079). The stalker (1130) and the hunter (1125) are still stronger. A GRU with built-in clocks, fine-tuned from it, did worse.
 
 **First benchmark** (6 minutes per architecture × method, veteran teacher): [`results/benchmark.md`](results/benchmark.md).
 - ES was the best method, ahead of PPO.

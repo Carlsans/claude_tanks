@@ -234,6 +234,14 @@ impl TrainTab {
                                 .logarithmic(true)
                                 .text("learning rate"),
                         );
+                        ui.add(
+                            egui::Slider::new(&mut im.bptt, 8..=512)
+                                .logarithmic(true)
+                                .text("memory window (decisions)"),
+                        )
+                        .on_hover_text(
+                            "Longest span the network learns to remember from the teacher. 30 decisions = 1 s.",
+                        );
                     });
                 }
             }
