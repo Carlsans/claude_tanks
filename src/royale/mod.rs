@@ -9,6 +9,7 @@ pub mod battle;
 pub mod pilot;
 pub mod protocol;
 pub mod server;
+pub mod sparring;
 
 pub const BOT_RADIUS: f64 = 18.0;
 pub const BOT_DIAMETER: f64 = 36.0;

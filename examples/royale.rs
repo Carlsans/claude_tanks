@@ -2,8 +2,9 @@
 //! `royale [rounds=N] [tps=T] [port=P] [seed=S] <entrant> <entrant> ...`
 //! An entrant is a bot directory (started like the official booter does),
 //! `model:<file.json>` (one of our networks), `bot:<level>` (one of our
-//! scripted bots, by name or number) or `wait:<name>` (a bot that connects by
-//! itself). Prints each round's winner and the final scores.
+//! scripted bots, by name or number), `spar:<name>` (a built-in port of a
+//! sample bot: SpinBot, Walls, TrackFire, RamFire, Crazy) or `wait:<name>` (a
+//! bot that connects by itself). Prints each round's winner and the final scores.
 use claude_tanks::bots::ScriptedBot;
 use claude_tanks::bots::scripted::LEVELS;
 use claude_tanks::nn::ModelFile;
@@ -12,6 +13,7 @@ use claude_tanks::royale::pilot::{Adapter, Driver};
 use claude_tanks::royale::server::{
     BattleOptions, BotDir, DEFAULT_PORT, Entrant, Live, Server, ranks, run_battle,
 };
+use claude_tanks::royale::sparring::Sparring;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -40,6 +42,13 @@ fn main() {
             entrants.push(Entrant::Local(Box::new(Adapter::new(Driver::Net(
                 m.brain(),
             )))));
+        } else if let Some(n) = s.strip_prefix("spar:") {
+            let k = Sparring::ALL
+                .into_iter()
+                .find(|k| k.name().eq_ignore_ascii_case(n))
+                .unwrap_or_else(|| panic!("unknown sparring bot {n}"));
+            names.push(format!("{} (port)", k.name()));
+            entrants.push(Entrant::Local(Box::new(k.pilot())));
         } else if let Some(l) = s.strip_prefix("bot:") {
             let level = LEVELS
                 .iter()

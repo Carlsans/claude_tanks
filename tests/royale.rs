@@ -183,3 +183,47 @@ fn remote_bots_play_through_the_server() {
         t.join().unwrap();
     }
 }
+
+/// The built-in sample-bot ports play like the real ones (checked against the
+/// Java bots: Walls vs SpinBot is about even, RamFire beats Crazy every round).
+#[test]
+fn sparring_ports_play_like_the_samples() {
+    use claude_tanks::royale::sparring::Sparring;
+    let wins = |a: Sparring, b: Sparring, rounds: u32| -> [u32; 2] {
+        let setup = Setup {
+            rounds,
+            ..Setup::default()
+        };
+        let mut battle = Battle::new(setup.clone(), 2, 21);
+        let mut pilots = [a.pilot(), b.pilot()];
+        let mut next: [Option<Intent>; 2] = [None, None];
+        while !battle.game_ended() {
+            let intents: Vec<(u32, Intent)> = (0..2)
+                .filter_map(|k| next[k].take().map(|i| (k as u32 + 1, i)))
+                .collect();
+            let t = battle.step(&intents);
+            if t.turn == 1 {
+                pilots.iter_mut().for_each(|p| p.reset());
+            }
+            for (k, p) in pilots.iter_mut().enumerate() {
+                if let Some(me) = t.bot(k as u32 + 1).filter(|b| b.alive()) {
+                    next[k] = Some(p.act(&View {
+                        setup: &setup,
+                        turn: t.turn,
+                        me,
+                        bullets: &[],
+                        events: &t.events[k],
+                    }));
+                }
+            }
+        }
+        [
+            battle.results[0].first_places,
+            battle.results[1].first_places,
+        ]
+    };
+    let [ram, crazy] = wins(Sparring::RamFire, Sparring::Crazy, 10);
+    assert!(ram >= 8 && crazy <= 2, "RamFire {ram} vs Crazy {crazy}");
+    let [walls, spin] = wins(Sparring::Walls, Sparring::SpinBot, 20);
+    assert!(walls >= 4 && spin >= 4, "Walls {walls} vs SpinBot {spin}");
+}
