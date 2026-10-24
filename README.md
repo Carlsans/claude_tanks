@@ -108,3 +108,13 @@ With 6 minutes of training per entry (on 16 threads, after imitation pretraining
 - **PPO holds the imitation level but improves on it only slowly.** GRU / PPO comes next.
 - **GA loses most of what imitation gave it:** its mutations are too coarse for pretrained weights.
 - **NEAT, which starts from scratch, stays far behind** at this budget.
+
+**Longer training beats the bot.** A GRU trained with ES for 40 minutes (1400 generations, 16 matches per candidate, 70% of them against the scripted bot) is saved as [`models/champions/gru_es_40min.json`](models/champions/gru_es_40min.json). On 1000 matches it had never seen (`diagnose <model> 1000`):
+
+| Pilot vs the veteran bot | Win | Draw | Loss |
+|---|---|---|---|
+| GRU / ES, 40 min | **51%** | 14% | 36% |
+| GRU / ES, 6 min (benchmark) | 40% | 6% | 54% |
+| The veteran bot itself | 45% | 8% | 47% |
+
+The 40-minute model fires more shots, and more of them hit (0.51 hits per match, against 0.41 for the 6-minute model). Most of the gain comes in the first ~900 generations.

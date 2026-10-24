@@ -1,15 +1,19 @@
-//! Play statistics of a pilot vs the veteran bot: `diagnose [model.json]` (no arg = scripted bot itself).
+//! Play statistics of a pilot vs the veteran bot: `diagnose [model.json|-] [matches]`
+//! (no model or `-` = the scripted bot itself).
 use claude_tanks::bots::ScriptedBot;
 use claude_tanks::nn::ModelFile;
 use claude_tanks::sim::Terrain;
 use claude_tanks::sim::world::{Controller, run_match};
 
 fn main() {
-    let path = std::env::args().nth(1);
+    let path = std::env::args().nth(1).filter(|p| p != "-");
     let model = path
         .as_ref()
         .map(|p| ModelFile::load(p.as_ref()).expect("model"));
-    let n = 200u64;
+    let n: u64 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
     let (mut w, mut l, mut d) = (0, 0, 0);
     let (mut shots, mut hits, mut radar, mut aim, mut near, mut dist, mut secs) =
         (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
