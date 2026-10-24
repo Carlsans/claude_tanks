@@ -3,6 +3,7 @@
 pub mod arena_view;
 pub mod bench_tab;
 pub mod display_tab;
+pub mod royale_tab;
 pub mod train_tab;
 
 use crate::bots::scripted::VETERAN;
@@ -13,6 +14,7 @@ enum Tab {
     Train,
     Display,
     Benchmark,
+    Robocode,
 }
 
 pub struct App {
@@ -20,6 +22,7 @@ pub struct App {
     display: display_tab::DisplayTab,
     train: train_tab::TrainTab,
     bench: bench_tab::BenchTab,
+    royale: royale_tab::RoyaleTab,
 }
 
 impl App {
@@ -29,6 +32,7 @@ impl App {
             display: display_tab::DisplayTab::default(),
             train: train_tab::TrainTab::default(),
             bench: bench_tab::BenchTab::default(),
+            royale: royale_tab::RoyaleTab::default(),
         }
     }
 }
@@ -42,6 +46,7 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.tab, Tab::Train, "Train");
                 ui.selectable_value(&mut self.tab, Tab::Display, "Display");
                 ui.selectable_value(&mut self.tab, Tab::Benchmark, "Benchmark");
+                ui.selectable_value(&mut self.tab, Tab::Robocode, "Robocode");
             });
         });
         self.train.poll();
@@ -61,6 +66,7 @@ impl eframe::App for App {
             Tab::Display => self.display.ui(ui),
             Tab::Train => self.train.ui(ui),
             Tab::Benchmark => self.bench.ui(ui),
+            Tab::Robocode => self.royale.ui(ui),
         }
     }
 }

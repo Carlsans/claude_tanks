@@ -475,6 +475,10 @@ impl BotDir {
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{base}.json"))).ok()?)
                 .ok()?;
+        // Teams are not single bots.
+        if json.get("teamMembers").is_some() {
+            return None;
+        }
         Some(BotDir {
             dir: dir.to_path_buf(),
             name: json["name"].as_str().unwrap_or(&base).to_string(),

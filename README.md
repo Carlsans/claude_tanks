@@ -150,6 +150,10 @@ cargo run --release --example royale -- bot:hunter wait:MyBot   # a bot you star
   - Trains every architecture × method with the same budget: wall-clock time per entry (the default) and/or simulated steps. Imitation pretraining isn't counted in the budget.
   - Then runs a round-robin tournament between the champions and the veteran bot.
   - Results are an Elo ranking and a score matrix, saved to `results/`. Champions go to `models/champions/`.
+- **Robocode**
+  - Runs a Tank Royale server (port 7654) that real Robocode bots join.
+  - *Bot folders* lists the bot directories under `bots/` (or any folder); *Start* launches one, and it connects by itself.
+  - Pick two sides from the connected bots, our scripted bots and our saved models, set the rounds and the speed (turns per second, or *max*), and watch: energy bars, radar sweeps, bullets, and the score table.
 
 ## Headless tools
 
