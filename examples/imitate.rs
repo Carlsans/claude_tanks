@@ -1,8 +1,9 @@
 //! Imitation-only quality check: `imitate <arch> [epochs] [matches] [dagger] [lr]`, then play the veteran.
+//! The weights are cached in `models/pretrained/` like a training run's warm start.
 use claude_tanks::nn::{Arch, Brain, Genes};
 use claude_tanks::rng::Rng;
 use claude_tanks::train::eval::vs_scripted;
-use claude_tanks::train::imitation::{ImitationParams, pretrain};
+use claude_tanks::train::imitation::{ImitationParams, pretrain_cached};
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -21,7 +22,7 @@ fn main() {
         p.lr = v.parse().unwrap();
     }
     let t = std::time::Instant::now();
-    let params = pretrain(arch, &p, &mut Rng::new(1), &|l| println!("{l}"));
+    let params = pretrain_cached(arch, &p, &mut Rng::new(1), &|l| println!("{l}"));
     let g = Genes::Fixed(params);
     let (r, _) = vs_scripted(&|| Box::new(Brain::new(arch, &g)), 200, 3);
     println!(
