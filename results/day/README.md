@@ -31,7 +31,7 @@ Win−loss points over 1000 fresh matches against each opponent (night champion'
 
 | Model | veteran | ace | reference | vs champion | hunter | brawler | stalker |
 |---|---|---|---|---|---|---|---|
-| Night champion (E11) | +8.8 | +19.6 | +13.8 | – | −15.2 | −13.7 | −24.0 |
+| Night champion (E11) | +8.8 | +19.6 | +13.8 | – | −15 | −14 | −24 |
 | D1 league, best | +14.9 | +20.1 | +19.2 | +2.9 | −15.2 | −13.6 | −17.6 |
 | D1 league, latest | +12.6 | +13.0 | +22.7 | −1.9 | −14.2 | −12.1 | −20.4 |
 | D1 league, ema | +12.7 | +16.3 | **+24.0** | **+3.5** | −10.7 | −7.4 | −17.8 |
