@@ -98,6 +98,41 @@ All methods share the same training loop:
 - **Fine-tuning:** `init_model` starts a run from any saved model of the same architecture, or copies a GRU into GRU + clocks.
 - **Weight averaging (ES):** the run also keeps an exponential moving average of the weights (`ema_decay`, default 0.99) and saves it as `ema.json`.
 
+## Robocode battles (Tank Royale)
+
+The app also plays by the rules of [Robocode Tank Royale](https://robocode.dev), the successor of [Robocode](https://robocode.sourceforge.io/). Real Robocode bots can fight here, against each other or against our tanks.
+
+**How the rules differ from ours:**
+
+| | Robocode | Ours |
+|---|---|---|
+| Arena | 800×600, open | Random maze from open field to light labyrinth |
+| Health | 100 energy. A bullet does 4–16 damage; firing costs energy and a hit gives back 3× its power | One hit kills |
+| Gun | Choose firepower 0.1–3; stronger bullets are slower and heat the gun longer | 3 shells, 0.5 s between shots, 1 back every 5 s |
+| Movement | +1 / −2 per turn, top speed 8, turning slows with speed | Engine force against drag (inertia) |
+| Radar | Sweeps up to 45° per turn, sees 1200 px with exact data, including the enemy's energy | A 10° beam blocked by walls |
+
+**Importing bots:**
+- `src/royale/` ports the official server's turn logic (the [Apache-2.0 source](https://github.com/robocode-dev/tank-royale), v1.4.0) and speaks its WebSocket protocol on port 7654, the official default.
+- Any Tank Royale bot can connect: Java, C#, Python, TypeScript. Classic Robocode `.jar` robots run through the official [robocode-api-bridge](https://github.com/robocode-dev/robocode-api-bridge).
+- A bot directory (`<Name>/<Name>.json` plus a script, a `.java` or a `.py` file) is started the way the official booter does it. The [official sample bots](https://github.com/robocode-dev/tank-royale/releases) work as they are.
+- Our pilots join as local bots. They see only what a Royale bot sees (its own state, its own bullets and its events) and get it as our usual 34 inputs. A few inputs change meaning: own energy, gun heat, the enemy's energy, and "the enemy just fired" (judged by its energy drop, since Royale bots never see enemy bullets).
+
+**Checked against the official server** (same sample bots, rounds won):
+
+| Battle | Official server | Here |
+|---|---|---|
+| Walls vs SpinBot, 30 rounds | 16 – 14 | 16 – 14 |
+| RamFire vs Crazy, 20 rounds | 20 – 0 | 20 – 0 |
+| TrackFire vs Corners, 20 rounds | 20 – 0 (score 3628 – 334) | 20 – 0 (score 3607 – 298) |
+
+```sh
+# Unpack sample-bots-Java-1.4.0.zip into bots/, then:
+cargo run --release --example royale -- rounds=10 bots/Walls bots/SpinBot
+cargo run --release --example royale -- rounds=10 model:models/champions/gru_es_day.json bots/SpinBot
+cargo run --release --example royale -- bot:hunter wait:MyBot   # a bot you start yourself
+```
+
 ## The GUI
 
 - **Train**
