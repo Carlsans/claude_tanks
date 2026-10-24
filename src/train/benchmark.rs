@@ -4,6 +4,7 @@
 use super::eval::{Record, head_to_head};
 use super::{GenStats, Method, Msg, TrainConfig, spawn};
 use crate::bots::ScriptedBot;
+use crate::bots::scripted::{MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, ModelFile, models_dir};
 use crate::sim::world::Controller;
 use crossbeam_channel::{Receiver, Sender};
@@ -62,6 +63,9 @@ pub struct Contestant {
     pub generations: u32,
     #[serde(default)]
     pub train_steps: u64,
+    /// Scripted level for contestants without a model (veteran when absent).
+    #[serde(default)]
+    pub level: Option<u8>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -263,10 +267,18 @@ fn run(cfg: BenchConfig, tx: &Sender<BenchMsg>, stop: &Receiver<()>) {
             train_seconds: last.seconds,
             generations: last.generation + 1,
             train_steps: last.steps,
+            level: None,
         });
     }
+    // The veteran goes last: the Elo fit anchors the last contestant at 1000.
+    contestants.push(Contestant {
+        name: "Scripted bot (ace)".into(),
+        level: Some(MAX_LEVEL),
+        ..Default::default()
+    });
     contestants.push(Contestant {
         name: "Scripted bot (veteran)".into(),
+        level: Some(VETERAN),
         ..Default::default()
     });
 
@@ -278,7 +290,10 @@ fn run(cfg: BenchConfig, tx: &Sender<BenchMsg>, stop: &Receiver<()>) {
     let make = |i: usize| -> Box<dyn Controller> {
         match &models[i] {
             Some(m) => Box::new(m.brain()),
-            None => Box::new(ScriptedBot::new(i as u64)),
+            None => Box::new(ScriptedBot::with_level(
+                i as u64,
+                contestants[i].level.unwrap_or(VETERAN),
+            )),
         }
     };
     let n = contestants.len();

@@ -2,6 +2,7 @@
 
 use super::arena_view::{self, Effect, Overlays, TANK_COLORS};
 use crate::bots::ScriptedBot;
+use crate::bots::scripted::{LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{ModelFile, list_models};
 use crate::sim::world::{Action, Controller, Event, World};
 use crate::sim::*;
@@ -11,21 +12,22 @@ use std::time::Instant;
 
 #[derive(Clone, PartialEq)]
 pub enum Pilot {
-    Scripted,
+    /// Scripted bot at a curriculum level.
+    Scripted(u8),
     Model(PathBuf),
 }
 
 impl Pilot {
     pub fn label(&self) -> String {
         match self {
-            Pilot::Scripted => "Scripted bot".into(),
+            Pilot::Scripted(l) => format!("Scripted {}", LEVELS[*l as usize]),
             Pilot::Model(p) => model_label(p),
         }
     }
 
     fn controller(&self, seed: u64) -> Result<Box<dyn Controller>, String> {
         Ok(match self {
-            Pilot::Scripted => Box::new(ScriptedBot::new(seed)),
+            Pilot::Scripted(l) => Box::new(ScriptedBot::with_level(seed, *l)),
             Pilot::Model(p) => {
                 let m = ModelFile::load(p).map_err(|e| format!("{}: {e}", p.display()))?;
                 Box::new(m.brain())
@@ -80,7 +82,7 @@ pub struct DisplayTab {
 impl Default for DisplayTab {
     fn default() -> Self {
         let mut d = DisplayTab {
-            pilots: [Pilot::Scripted, Pilot::Scripted],
+            pilots: [Pilot::Scripted(MAX_LEVEL), Pilot::Scripted(VETERAN)],
             models: list_models(),
             seed: 1,
             density: 0.4,
@@ -259,13 +261,13 @@ impl DisplayTab {
                     .width(220.0)
                     .selected_text(self.pilots[side].label())
                     .show_ui(ui, |ui| {
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.pilots[side],
-                                Pilot::Scripted,
-                                "Scripted bot",
-                            )
-                            .changed();
+                        for l in [VETERAN, MAX_LEVEL] {
+                            let p = Pilot::Scripted(l);
+                            let label = p.label();
+                            changed |= ui
+                                .selectable_value(&mut self.pilots[side], p, label)
+                                .changed();
+                        }
                         for m in &self.models {
                             changed |= ui
                                 .selectable_value(

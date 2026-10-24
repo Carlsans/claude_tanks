@@ -1,7 +1,7 @@
 //! Train mode: configure a run, start/pause/stop/resume it, follow progress plots.
 //! No battles are rendered here; use the Display tab to watch a saved pilot.
 
-use crate::bots::scripted::LEVELS;
+use crate::bots::scripted::{LEVELS, MAX_LEVEL};
 use crate::nn::Arch;
 use crate::train::{self, GenStats, Method, Msg, RunState, TrainConfig, TrainHandle, list_runs};
 use eframe::egui::{self, Color32, RichText};
@@ -198,6 +198,13 @@ impl TrainTab {
                 if c.imitation.enabled {
                     ui.collapsing("Imitation settings", |ui| {
                         let im = &mut c.imitation;
+                        egui::ComboBox::from_label("teacher")
+                            .selected_text(LEVELS[im.teacher.min(MAX_LEVEL) as usize])
+                            .show_ui(ui, |ui| {
+                                for l in 2..=MAX_LEVEL {
+                                    ui.selectable_value(&mut im.teacher, l, LEVELS[l as usize]);
+                                }
+                            });
                         ui.add(
                             egui::Slider::new(&mut im.matches, 20..=2000)
                                 .text("demo matches / round"),

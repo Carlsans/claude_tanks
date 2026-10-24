@@ -224,3 +224,25 @@ fn scripted_bots_actually_fight() {
     }
     assert!(decided >= 8, "only {decided}/20 matches were decided");
 }
+
+#[test]
+fn ace_beats_veteran() {
+    use claude_tanks::bots::scripted::MAX_LEVEL;
+    let mut w = [0; 3];
+    for seed in 0..100 {
+        let r = run_match(
+            Terrain::generate(seed, (seed % 11) as f32 / 10.0),
+            seed % 2 == 1,
+            &mut ScriptedBot::with_level(seed, MAX_LEVEL),
+            &mut ScriptedBot::new(seed + 99),
+        );
+        w[r.winner.unwrap_or(2)] += 1;
+    }
+    assert!(
+        w[0] > w[1] + 15,
+        "ace {} veteran {} draws {}",
+        w[0],
+        w[1],
+        w[2]
+    );
+}

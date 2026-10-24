@@ -1,12 +1,15 @@
-//! Play statistics of a pilot vs the veteran bot: `diagnose [model.json|-] [matches]`
-//! (no model or `-` = the scripted bot itself).
+//! Play statistics of a pilot vs the veteran bot: `diagnose [model.json|-|ace] [matches]`
+//! (no model or `-` = the veteran itself, `ace` = the strongest scripted level).
 use claude_tanks::bots::ScriptedBot;
+use claude_tanks::bots::scripted::{MAX_LEVEL, VETERAN};
 use claude_tanks::nn::ModelFile;
 use claude_tanks::sim::Terrain;
 use claude_tanks::sim::world::{Controller, run_match};
 
 fn main() {
-    let path = std::env::args().nth(1).filter(|p| p != "-");
+    let arg = std::env::args().nth(1).unwrap_or_else(|| "-".into());
+    let level = if arg == "ace" { MAX_LEVEL } else { VETERAN };
+    let path = Some(arg).filter(|p| p != "-" && p != "ace");
     let model = path
         .as_ref()
         .map(|p| ModelFile::load(p.as_ref()).expect("model"));
@@ -21,7 +24,7 @@ fn main() {
     for s in 0..n {
         let mut me: Box<dyn Controller> = match &model {
             Some(m) => Box::new(m.brain()),
-            None => Box::new(ScriptedBot::new(s + 1000)),
+            None => Box::new(ScriptedBot::with_level(s + 1000, level)),
         };
         let r = run_match(
             Terrain::generate(s + 77, (s % 11) as f32 / 10.0),

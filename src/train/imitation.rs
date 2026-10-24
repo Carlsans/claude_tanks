@@ -2,6 +2,7 @@
 //! followed by DAgger rounds (the network drives, the scripted bot labels).
 
 use crate::bots::ScriptedBot;
+use crate::bots::scripted::{LEVELS, MAX_LEVEL};
 use crate::nn::Arch;
 use crate::nn::fixed::{FixedNet, Layout, N_IN, N_OUT, init_params};
 use crate::nn::grad::{last_hidden, seq_backward, seq_forward};
@@ -11,8 +12,11 @@ use crate::sim::{ACTION_REPEAT, Terrain};
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ImitationParams {
     pub enabled: bool,
+    /// Scripted level that demonstrates (and labels the DAgger rounds).
+    pub teacher: u8,
     /// Demonstration matches per round.
     pub matches: usize,
     pub epochs: usize,
@@ -24,6 +28,7 @@ impl Default for ImitationParams {
     fn default() -> Self {
         ImitationParams {
             enabled: true,
+            teacher: MAX_LEVEL,
             matches: 300,
             epochs: 20,
             dagger_rounds: 3,
@@ -49,13 +54,14 @@ fn target(a: &Action) -> [f32; N_OUT] {
 }
 
 /// Record one match: tank 0 is driven by the learner (if given) or the expert;
-/// the expert's action is always the label.
-fn record(arch: Arch, learner: Option<&[f32]>, seed: u64, density: f32) -> Seq {
+/// the expert's action is always the label. Opponents range from the rookie
+/// to the ace, so the demonstrations include shells to dodge.
+fn record(arch: Arch, teacher: u8, learner: Option<&[f32]>, seed: u64, density: f32) -> Seq {
     let mut rng = Rng::new(seed);
     let terrain = Terrain::generate(seed, density);
     let mut w = World::new(terrain, seed % 2 == 1);
-    let mut expert = ScriptedBot::new(seed ^ 0x55);
-    let mut opp = ScriptedBot::with_level(seed ^ 0xAA, 1 + rng.below(3) as u8);
+    let mut expert = ScriptedBot::with_level(seed ^ 0x55, teacher);
+    let mut opp = ScriptedBot::with_level(seed ^ 0xAA, 2 + rng.below(3) as u8);
     let mut net = learner.map(|p| FixedNet::new(arch, p.to_vec()));
     let mut seq = Seq {
         obs: Vec::new(),
@@ -162,8 +168,9 @@ pub fn pretrain_cached(
     log: &dyn Fn(String),
 ) -> Vec<f32> {
     let name = format!(
-        "{}_m{}_e{}_d{}_lr{}.json",
+        "{}_{}_m{}_e{}_d{}_lr{}.json",
         arch.short(),
+        LEVELS[params.teacher.min(MAX_LEVEL) as usize].replace(' ', "_"),
         params.matches,
         params.epochs,
         params.dagger_rounds,
@@ -179,7 +186,11 @@ pub fn pretrain_cached(
     }
     let p = pretrain(arch, params, rng, log);
     let m = crate::nn::ModelFile {
-        name: format!("{} imitation", arch.name()),
+        name: format!(
+            "{} imitating the {}",
+            arch.name(),
+            LEVELS[params.teacher.min(MAX_LEVEL) as usize]
+        ),
         arch,
         method: "Imitation".into(),
         generation: 0,
@@ -207,7 +218,7 @@ pub fn pretrain(
             .collect();
         let new: Vec<Seq> = seeds
             .into_par_iter()
-            .map(|(s, d)| record(arch, learner.as_deref(), s, d))
+            .map(|(s, d)| record(arch, params.teacher, learner.as_deref(), s, d))
             .collect();
         data.extend(new);
         let loss = train(arch, &mut p, &data, params, rng);

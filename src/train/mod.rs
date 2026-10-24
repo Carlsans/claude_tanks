@@ -8,7 +8,7 @@ pub mod imitation;
 pub mod neat_evo;
 pub mod ppo;
 
-use crate::bots::scripted::{LEVELS, MAX_LEVEL};
+use crate::bots::scripted::{LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, Brain, Genes, ModelFile, models_dir};
 use crate::rng::Rng;
 use crossbeam_channel::{Receiver, Sender};
@@ -471,12 +471,17 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let arch = cfg.arch;
         let make =
             || -> Box<dyn crate::sim::world::Controller> { Box::new(Brain::new(arch, &champ)) };
-        let (record, mut eval_ticks) = eval::vs_scripted(&make, cfg.eval_matches, MAX_LEVEL);
+        let (record, mut eval_ticks) = eval::vs_scripted(&make, cfg.eval_matches, VETERAN);
         let level = st.level;
         let mut promoted = None;
         if st.level < MAX_LEVEL {
-            let (r, t) = eval::vs_scripted(&make, cfg.eval_matches, st.level);
-            eval_ticks += t;
+            let r = if st.level == VETERAN {
+                record
+            } else {
+                let (r, t) = eval::vs_scripted(&make, cfg.eval_matches, st.level);
+                eval_ticks += t;
+                r
+            };
             if r.win >= PROMOTE_WIN_RATE {
                 st.level += 1;
                 promoted = Some(format!(

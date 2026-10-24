@@ -1,5 +1,7 @@
 //! Benchmark mode: equal-budget training of every architecture, then a tournament.
 
+use super::display_tab::Pilot;
+use crate::bots::scripted::VETERAN;
 use crate::train::GenStats;
 use crate::train::benchmark::{
     BenchConfig, BenchHandle, BenchMsg, BenchResults, all_entries, entry_name, spawn_benchmark,
@@ -15,7 +17,7 @@ pub struct BenchTab {
     last: Vec<Option<GenStats>>,
     log: Vec<String>,
     results: Option<BenchResults>,
-    pub watch_request: Option<(PathBuf, Option<PathBuf>)>,
+    pub watch_request: Option<(PathBuf, Pilot)>,
 }
 
 impl Default for BenchTab {
@@ -179,8 +181,12 @@ impl BenchTab {
                     }
                     if let Some(p) = &c.model {
                         if ui.small_button("watch vs #1").clicked() {
-                            let top = r.contestants[rank[0]].model.clone();
-                            self.watch_request = Some((p.clone(), top));
+                            let top = &r.contestants[rank[0]];
+                            let pilot = match &top.model {
+                                Some(m) => Pilot::Model(m.clone()),
+                                None => Pilot::Scripted(top.level.unwrap_or(VETERAN)),
+                            };
+                            self.watch_request = Some((p.clone(), pilot));
                         }
                     } else {
                         ui.label("");

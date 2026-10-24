@@ -5,6 +5,7 @@ pub mod bench_tab;
 pub mod display_tab;
 pub mod train_tab;
 
+use crate::bots::scripted::VETERAN;
 use eframe::egui;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -46,13 +47,13 @@ impl eframe::App for App {
         self.train.poll();
         if let Some(p) = self.train.watch_request.take() {
             self.display.set_pilot(0, display_tab::Pilot::Model(p));
-            self.display.set_pilot(1, display_tab::Pilot::Scripted);
+            self.display
+                .set_pilot(1, display_tab::Pilot::Scripted(VETERAN));
             self.tab = Tab::Display;
         }
         self.bench.poll();
         if let Some((a, b)) = self.bench.watch_request.take() {
             self.display.set_pilot(0, display_tab::Pilot::Model(a));
-            let b = b.map_or(display_tab::Pilot::Scripted, display_tab::Pilot::Model);
             self.display.set_pilot(1, b);
             self.tab = Tab::Display;
         }
