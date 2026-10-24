@@ -279,6 +279,11 @@ impl TrainTab {
                                 .text("mutation sigma"),
                         );
                         ui.add(
+                            egui::Slider::new(&mut g.pretrained_sigma, 0.0005..=0.1)
+                                .logarithmic(true)
+                                .text("sigma from imitation"),
+                        );
+                        ui.add(
                             egui::Slider::new(&mut g.crossover, 0.0..=1.0).text("crossover prob"),
                         );
                     });
