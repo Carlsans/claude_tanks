@@ -112,6 +112,33 @@ impl Drop for Server {
     }
 }
 
+/// One end of a connection's socket. The reader and the writer each drive
+/// their own WebSocket on a clone of the socket; every write takes the shared
+/// lock, so the reader's automatic pongs cannot cut into a frame being sent.
+struct Half {
+    s: TcpStream,
+    lock: Arc<Mutex<()>>,
+}
+
+impl std::io::Read for Half {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.s.read(buf)
+    }
+}
+
+impl std::io::Write for Half {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _g = self.lock.lock().unwrap();
+        self.s.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.s.flush()
+    }
+}
+
+/// Serves one bot. A blocking reader and a writer woken by the outgoing
+/// channel: polling with socket timeouts would cost up to a kernel tick
+/// (several ms) per message.
 fn serve(
     stream: TcpStream,
     id: u64,
@@ -119,18 +146,32 @@ fn serve(
     in_tx: Sender<(u64, Incoming)>,
     stop: Arc<AtomicBool>,
 ) {
+    use tungstenite::protocol::Role;
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_nodelay(true);
-    let Ok(mut ws) = tungstenite::accept(stream) else {
+    let Ok(ws) = tungstenite::accept(stream) else {
         return;
     };
-    let _ = ws
-        .get_mut()
-        .set_read_timeout(Some(Duration::from_micros(200)));
+    // Nothing is buffered yet: the bot waits for our handshake before talking.
+    let (Ok(r), Ok(w)) = (ws.get_ref().try_clone(), ws.get_ref().try_clone()) else {
+        return;
+    };
+    drop(ws);
+    let lock = Arc::new(Mutex::new(()));
+    let mut reader = tungstenite::WebSocket::from_raw_socket(
+        Half {
+            s: r,
+            lock: lock.clone(),
+        },
+        Role::Server,
+        None,
+    );
+    let mut writer =
+        tungstenite::WebSocket::from_raw_socket(Half { s: w, lock }, Role::Server, None);
     let (tx, rx) = unbounded::<String>();
     let session = format!("claude-tanks-{id}");
     let hello = protocol::server_handshake(&session, &Setup::default());
-    if ws
+    if writer
         .send(tungstenite::Message::text(hello.to_string()))
         .is_err()
     {
@@ -144,15 +185,16 @@ fn serve(
             tx,
         },
     );
+    // The writer ends when the connection is forgotten (its sender dropped).
+    std::thread::spawn(move || {
+        while let Ok(m) = rx.recv() {
+            if writer.send(tungstenite::Message::text(m)).is_err() {
+                break;
+            }
+        }
+    });
     while !stop.load(Ordering::Relaxed) {
-        let mut failed = false;
-        while let Ok(m) = rx.try_recv() {
-            failed |= ws.send(tungstenite::Message::text(m)).is_err();
-        }
-        if failed {
-            break;
-        }
-        match ws.read() {
+        match reader.read() {
             Ok(tungstenite::Message::Text(t)) => {
                 match serde_json::from_str::<FromBot>(t.as_str()) {
                     Ok(FromBot::BotHandshake(h)) => {
@@ -171,11 +213,6 @@ fn serve(
             }
             Ok(tungstenite::Message::Close(_)) => break,
             Ok(_) => {}
-            Err(tungstenite::Error::Io(e))
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
             Err(_) => break,
         }
     }
