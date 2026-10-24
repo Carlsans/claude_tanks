@@ -101,4 +101,10 @@ cargo test --release
 
 ## Benchmark results
 
-See [`results/benchmark.md`](results/benchmark.md).
+Full table: [`results/benchmark.md`](results/benchmark.md). Trained weights are in [`models/champions/`](models/champions) and the imitation-pretrained starting points are in [`models/pretrained/`](models/pretrained).
+
+With 6 minutes of training per entry (on 16 threads, after imitation pretraining):
+- **ES is the best method.** MLP-L / ES and GRU / ES finish just below the scripted veteran, and GRU / ES plays it to an even record (47% wins, 51% losses).
+- **PPO holds the imitation level but improves on it only slowly.** GRU / PPO comes next.
+- **GA loses most of what imitation gave it:** its mutations are too coarse for pretrained weights.
+- **NEAT, which starts from scratch, stays far behind** at this budget.
