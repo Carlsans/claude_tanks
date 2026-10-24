@@ -2,7 +2,14 @@
 
 Two identical tanks duel in a random arena — from an open field to a light labyrinth — each driven by a black-box neural network. The app trains the networks (genetic algorithm, NEAT, PPO), compares architectures in a benchmark tournament, and replays battles in real or accelerated time.
 
-Everything runs on the CPU, multi-threaded. The GUI is a light 2D egui window (OpenGL), so GPU use stays minimal.
+Everything runs on the CPU, multi-threaded, with optional GPU help for training. The GUI is a light 2D egui window (OpenGL).
+
+**GPU (optional):**
+- GA and ES training can evaluate their networks on the GPU (wgpu compute shaders on Vulkan, DX12 or Metal).
+- All matches of a generation advance in lockstep, split in two halves so that the CPU simulates one half while the GPU computes the other half's networks.
+- With *Use the GPU when faster* on, the trainer times both devices on the first generations, keeps the faster one, and re-checks every 200 generations.
+- The GPU wins for larger networks: GRU-64 runs ~1.5× faster. For small ones the vectorized CPU path is as fast or faster.
+- Without a GPU, or with `cargo build --release --no-default-features`, everything runs on the CPU.
 
 Supported platforms: **Linux (x86_64)**, **Windows (x86_64)** and **Raspberry Pi 5 (Linux aarch64)**. Prebuilt binaries are on the [Releases](https://github.com/Carlsans/claude_tanks/releases) page. Each archive also holds the champion models from the latest benchmark.
 
@@ -90,7 +97,9 @@ cargo run --release --example train_cli -- gru ppo 100 population=32 ppo.lr=0.00
 cargo run --release --example benchmark_cli -- 6 100     # minutes per entry, matches per pairing
 cargo run --release --example imitate -- gru 20          # imitation only, then play the veteran
 cargo run --release --example diagnose -- models/champions/gru_es.json   # play statistics vs the veteran
-cargo run --release --example bench                      # simulation speed
+cargo run --release --example bench                      # simulation speed per architecture
+cargo run --release --example gpu_bench                  # one generation on CPU vs GPU
+cargo run --release --example evaluate -- <model> 1000   # scorecard vs veteran, ace, champion
 cargo test --release
 ```
 

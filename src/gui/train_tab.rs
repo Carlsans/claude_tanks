@@ -233,6 +233,14 @@ impl TrainTab {
             c.density.1 = c.density.1.max(c.density.0);
             let max_threads = std::thread::available_parallelism().map_or(4, |n| n.get());
             ui.add(egui::Slider::new(&mut c.threads, 1..=max_threads).text("CPU threads"));
+            if matches!(c.method, Method::Ga | Method::Es) {
+                #[cfg(feature = "gpu")]
+                ui.checkbox(&mut c.use_gpu, "Use the GPU when faster")
+                    .on_hover_text(format!(
+                        "{}\nTimes both devices on the first generations and keeps the faster one.",
+                        crate::gpu::status()
+                    ));
+            }
             ui.horizontal(|ui| {
                 ui.label("Seed");
                 ui.add(egui::DragValue::new(&mut c.seed));

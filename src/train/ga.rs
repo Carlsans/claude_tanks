@@ -1,8 +1,8 @@
 //! Genetic algorithm over flat parameter vectors (fixed-topology networks).
 
-use super::eval::eval_population;
+use super::eval::eval_fixed;
 use super::{StepEnv, StepReport, TrainConfig};
-use crate::nn::{Brain, Genes, fixed};
+use crate::nn::{Genes, fixed};
 use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -65,9 +65,10 @@ impl Ga {
         };
         let arch = env.cfg.arch;
         let pop = &self.pop;
-        let out = eval_population(
-            &|i| Box::new(Brain::new(arch, &Genes::Fixed(pop[i].clone()))),
-            pop.len(),
+        let out = eval_fixed(
+            arch,
+            pop,
+            env.use_gpu,
             &env.opponents,
             &env.terrains,
             env.shaping,

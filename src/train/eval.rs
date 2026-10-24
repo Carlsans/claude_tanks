@@ -4,6 +4,8 @@ use crate::bots::ScriptedBot;
 use crate::nn::{Arch, Brain, Genes};
 use crate::rng::Rng;
 use crate::sim::world::{Controller, MatchResult, run_match};
+#[cfg(feature = "gpu")]
+use crate::sim::{ACTION_REPEAT, Action, World};
 use crate::sim::{MATCH_TIME, Terrain};
 use rayon::prelude::*;
 use std::sync::Arc;
@@ -101,6 +103,252 @@ pub fn eval_population(
         ticks += t;
     }
     EvalOutcome { fitness, ticks }
+}
+
+/// Population of fixed-topology networks (`members` are flat parameter vectors).
+/// Batched on the GPU when `use_gpu` is set and an adapter exists, otherwise one
+/// CPU network per match. Same matches and fitness either way.
+pub fn eval_fixed(
+    arch: Arch,
+    members: &[Vec<f32>],
+    use_gpu: bool,
+    opps: &[Opponent],
+    terrains: &[Terrain],
+    shaping: Shaping,
+) -> EvalOutcome {
+    #[cfg(feature = "gpu")]
+    if use_gpu && let Some(g) = crate::gpu::get() {
+        match eval_population_gpu(g, arch, members, opps, terrains, shaping) {
+            Ok(out) => return out,
+            Err(e) => eprintln!("GPU evaluation failed, falling back to the CPU: {e}"),
+        }
+    }
+    let _ = use_gpu;
+    eval_population(
+        &|i| Box::new(Brain::new(arch, &Genes::Fixed(members[i].clone()))),
+        members.len(),
+        opps,
+        terrains,
+        shaping,
+    )
+}
+
+#[cfg(feature = "gpu")]
+struct GpuJob {
+    world: World,
+    scripted: Option<ScriptedBot>,
+    acts: [Action; 2],
+}
+
+/// Matches sharing one GPU batch; rows 2j and 2j+1 belong to job j.
+#[cfg(feature = "gpu")]
+struct Group<'a, 'g> {
+    jobs: &'a mut [GpuJob],
+    batch: crate::gpu::Batch<'g>,
+    obs: Vec<f32>,
+    out: Vec<f32>,
+    first: bool,
+    live: usize,
+    pending: Option<wgpu::SubmissionIndex>,
+    /// Index of this group's first job in the whole population.
+    offset: usize,
+}
+
+#[cfg(feature = "gpu")]
+impl<'a, 'g> Group<'a, 'g> {
+    fn new(jobs: &'a mut [GpuJob], batch: crate::gpu::Batch<'g>) -> Self {
+        use crate::nn::fixed::{N_IN, N_OUT};
+        let n = jobs.len();
+        Group {
+            jobs,
+            batch,
+            obs: vec![0.0; 2 * n * N_IN],
+            out: vec![0.0; 2 * n * N_OUT],
+            first: true,
+            live: 0,
+            pending: None,
+            offset: 0,
+        }
+    }
+
+    /// One parallel pass: apply the latest outputs, advance each world to its next
+    /// decision tick, and write the next observations (and scripted actions).
+    fn advance(&mut self) {
+        use crate::nn::fixed::{N_IN, N_OUT};
+        let first = self.first;
+        self.first = false;
+        self.live = self
+            .jobs
+            .par_iter_mut()
+            .zip(self.obs.par_chunks_mut(2 * N_IN))
+            .zip(self.out.par_chunks(2 * N_OUT))
+            .with_min_len(4)
+            .map(|((jb, ob), o)| {
+                if jb.world.done() {
+                    return 0;
+                }
+                if !first {
+                    jb.acts[0] = Action::from_outputs(&o[..N_OUT]);
+                    if jb.scripted.is_none() {
+                        jb.acts[1] = Action::from_outputs(&o[N_OUT..]);
+                    }
+                    for _ in 0..ACTION_REPEAT {
+                        if jb.world.done() {
+                            return 0;
+                        }
+                        jb.world.step(jb.acts);
+                    }
+                    if jb.world.done() {
+                        return 0;
+                    }
+                }
+                ob[..N_IN].copy_from_slice(&jb.world.observe(0));
+                let o1 = jb.world.observe(1);
+                match &mut jb.scripted {
+                    Some(bot) => jb.acts[1] = bot.act(&o1),
+                    None => ob[N_IN..].copy_from_slice(&o1),
+                }
+                1
+            })
+            .sum();
+    }
+
+    /// Hand the remaining matches to CPU networks carrying the GPU's recurrent
+    /// state, and play them out independently.
+    fn finish_on_cpu(
+        &mut self,
+        arch: Arch,
+        sets: &[&[f32]],
+        row_param: &[u32],
+    ) -> Result<(), String> {
+        use crate::nn::fixed::{FixedNet, N_IN};
+        let hidden = self.batch.hidden()?;
+        let h = hidden.len() / (2 * self.jobs.len()).max(1);
+        let obs = &self.obs;
+        let offset = self.offset;
+        self.jobs.par_iter_mut().enumerate().for_each(|(j, jb)| {
+            if jb.world.done() {
+                return;
+            }
+            let net = |r: usize| {
+                let mut n = FixedNet::new(arch, sets[row_param[2 * offset + r] as usize].to_vec());
+                n.set_hidden_state(&hidden[r * h..(r + 1) * h]);
+                n
+            };
+            let mut me = net(2 * j);
+            let mut op = jb.scripted.is_none().then(|| net(2 * j + 1));
+            // Observations for this decision tick are already in `obs`.
+            let mut o0: [f32; N_IN] = obs[2 * j * N_IN..(2 * j + 1) * N_IN].try_into().unwrap();
+            let mut o1: [f32; N_IN] = obs[(2 * j + 1) * N_IN..(2 * j + 2) * N_IN]
+                .try_into()
+                .unwrap();
+            loop {
+                jb.acts[0] = Action::from_outputs(&me.forward(&o0));
+                if let Some(op) = &mut op {
+                    jb.acts[1] = Action::from_outputs(&op.forward(&o1));
+                }
+                for _ in 0..ACTION_REPEAT {
+                    if jb.world.done() {
+                        return;
+                    }
+                    jb.world.step(jb.acts);
+                }
+                if jb.world.done() {
+                    return;
+                }
+                o0 = jb.world.observe(0);
+                o1 = jb.world.observe(1);
+                if let Some(bot) = &mut jb.scripted {
+                    jb.acts[1] = bot.act(&o1);
+                }
+            }
+        });
+        self.live = 0;
+        Ok(())
+    }
+}
+
+/// GPU version of `eval_population`: every match advances in lockstep, and one
+/// GPU dispatch per decision step computes all the networks. Every match owns two
+/// GPU rows (candidate, opponent); the opponent row is unused against scripted bots.
+#[cfg(feature = "gpu")]
+fn eval_population_gpu(
+    gpu: &crate::gpu::Gpu,
+    arch: Arch,
+    members: &[Vec<f32>],
+    opps: &[Opponent],
+    terrains: &[Terrain],
+    shaping: Shaping,
+) -> Result<EvalOutcome, String> {
+    let (n, k) = (members.len(), opps.len());
+    let mut sets: Vec<&[f32]> = members.iter().map(|m| m.as_slice()).collect();
+    let mut opp_set = vec![0u32; k];
+    for (m, o) in opps.iter().enumerate() {
+        if let Opponent::Net(a, g) = o {
+            match &**g {
+                Genes::Fixed(p) if *a == arch => {
+                    opp_set[m] = sets.len() as u32;
+                    sets.push(p);
+                }
+                _ => return Err("opponent of another architecture".into()),
+            }
+        }
+    }
+    let mut row_param = Vec::with_capacity(2 * n * k);
+    let mut jobs: Vec<GpuJob> = (0..n * k)
+        .map(|j| {
+            let m = j % k;
+            row_param.extend([(j / k) as u32, opp_set[m]]);
+            let scripted = match &opps[m] {
+                Opponent::Scripted(s, l) => Some(ScriptedBot::with_level(*s, *l)),
+                Opponent::Net(..) => None,
+            };
+            GpuJob {
+                world: World::new(terrains[m].clone(), m % 2 == 1),
+                scripted,
+                acts: [Action::default(); 2],
+            }
+        })
+        .collect();
+    // Two halves in flight: the CPU advances one while the GPU computes the other.
+    let params = gpu.upload(arch, &sets);
+    let half = jobs.len().div_ceil(2);
+    let (ja, jb) = jobs.split_at_mut(half);
+    let mut groups = [
+        Group::new(ja, params.batch(&row_param[..2 * half])),
+        Group::new(jb, params.batch(&row_param[2 * half..])),
+    ];
+    groups[1].offset = half;
+    // Few matches left: the GPU's fixed per-step latency is no longer worth it.
+    let tail = 8 * rayon::current_num_threads();
+    for g in &mut groups {
+        g.advance();
+        g.pending = (g.live > 0).then(|| g.batch.submit(&g.obs));
+    }
+    while groups.iter().any(|g| g.pending.is_some()) {
+        for g in &mut groups {
+            let Some(i) = g.pending.take() else { continue };
+            g.batch.wait(i, &mut g.out)?;
+            g.advance();
+            if g.live > tail {
+                g.pending = Some(g.batch.submit(&g.obs));
+            } else if g.live > 0 {
+                g.finish_on_cpu(arch, &sets, &row_param)?;
+            }
+        }
+    }
+    drop(groups);
+    let mut fitness_sum = vec![0.0; n];
+    let mut ticks = 0;
+    for (j, jb) in jobs.iter().enumerate() {
+        let r = jb.world.result.as_ref().ok_or("match without result")?;
+        fitness_sum[j / k] += fitness(r, 0, shaping) / k as f32;
+        ticks += r.ticks as u64;
+    }
+    Ok(EvalOutcome {
+        fitness: fitness_sum,
+        ticks,
+    })
 }
 
 /// Win / draw / loss rates of a pilot against the scripted bot on a fixed benchmark set.

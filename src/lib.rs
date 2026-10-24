@@ -2,6 +2,8 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod bots;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod gui;
 pub mod nn;
 pub mod rng;

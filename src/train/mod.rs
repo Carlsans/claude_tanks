@@ -67,6 +67,9 @@ pub struct TrainConfig {
     /// Stop after this many seconds of training (0 = no limit).
     #[serde(default)]
     pub max_seconds: f64,
+    /// Batch GA/ES network evaluation on the GPU when one is available.
+    #[serde(default = "yes")]
+    pub use_gpu: bool,
     /// Fraction of opponents that are the scripted bot (rest: hall of fame).
     pub scripted_share: f32,
     pub hof_size: usize,
@@ -83,6 +86,10 @@ pub struct TrainConfig {
     pub ppo: ppo::PpoParams,
 }
 
+fn yes() -> bool {
+    true
+}
+
 impl Default for TrainConfig {
     fn default() -> Self {
         TrainConfig {
@@ -97,6 +104,7 @@ impl Default for TrainConfig {
             max_steps: 0,
             max_generations: 0,
             max_seconds: 0.0,
+            use_gpu: true,
             scripted_share: 0.5,
             hof_size: 20,
             shaping_start: 0.6,
@@ -190,6 +198,8 @@ pub struct StepReport {
 /// Everything a trainer needs for one generation.
 pub struct StepEnv<'a> {
     pub cfg: &'a TrainConfig,
+    /// Evaluate this generation's networks on the GPU (chosen by `DeviceChoice`).
+    pub use_gpu: bool,
     pub generation: u32,
     pub opponents: Vec<Opponent>,
     pub terrains: Vec<crate::sim::Terrain>,
@@ -372,6 +382,89 @@ fn model(cfg: &TrainConfig, genes: Genes, s: &GenStats) -> ModelFile {
     }
 }
 
+/// Picks the faster device for population evaluation. The GPU only pays off when
+/// the networks are large relative to the simulation, so with `use_gpu` the first
+/// generations alternate GPU and CPU, the faster per simulated tick wins, and the
+/// trial repeats every `RETRY` generations.
+struct DeviceChoice {
+    possible: bool,
+    trial: Vec<(bool, f64)>,
+    chosen: bool,
+    since: u32,
+}
+
+impl DeviceChoice {
+    const TRIAL: usize = 5;
+    const RETRY: u32 = 200;
+
+    fn new(cfg: &TrainConfig) -> DeviceChoice {
+        #[cfg(feature = "gpu")]
+        let possible = cfg.use_gpu
+            && matches!(cfg.method, Method::Ga | Method::Es)
+            && cfg.arch != Arch::Neat
+            && crate::gpu::get().is_some();
+        #[cfg(not(feature = "gpu"))]
+        let possible = {
+            let _ = cfg;
+            false
+        };
+        DeviceChoice {
+            possible,
+            trial: Vec::new(),
+            chosen: false,
+            since: 0,
+        }
+    }
+
+    fn pick(&mut self) -> bool {
+        if !self.possible {
+            return false;
+        }
+        if self.trial.len() < Self::TRIAL {
+            // GPU, CPU, GPU, CPU, GPU: the first GPU sample also pays the
+            // one-off start-up and is left out of the comparison.
+            return self.trial.len().is_multiple_of(2);
+        }
+        self.chosen
+    }
+
+    /// Returns a log line when a trial concludes.
+    fn record(&mut self, gpu: bool, seconds: f64, ticks: u64) -> Option<String> {
+        if !self.possible {
+            return None;
+        }
+        if self.trial.len() < Self::TRIAL {
+            self.trial.push((gpu, seconds / ticks.max(1) as f64));
+            if self.trial.len() < Self::TRIAL {
+                return None;
+            }
+            // Skip the first GPU sample (start-up) when comparing.
+            let mean = |g: bool| {
+                let v: Vec<f64> = self.trial[1..]
+                    .iter()
+                    .filter(|t| t.0 == g)
+                    .map(|t| t.1)
+                    .collect();
+                v.iter().sum::<f64>() / v.len().max(1) as f64
+            };
+            let (tg, tc) = (mean(true), mean(false));
+            self.chosen = tg < tc;
+            self.since = 0;
+            return Some(format!(
+                "evaluation on {} (GPU {:.0} ns/tick, CPU {:.0} ns/tick)",
+                if self.chosen { "GPU" } else { "CPU" },
+                tg * 1e9,
+                tc * 1e9
+            ));
+        }
+        self.since += 1;
+        if self.since >= Self::RETRY {
+            self.trial.clear();
+        }
+        None
+    }
+}
+
 fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Sender<Msg>) {
     let mut st = match resume {
         Some(st) => {
@@ -413,6 +506,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
     };
     let _ = tx.send(Msg::History(st.history.clone()));
     let dir = st.cfg.run_dir();
+    let mut device = DeviceChoice::new(&st.cfg);
     let mut paused = false;
     loop {
         // Commands.
@@ -458,14 +552,20 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let shaping = cfg.shaping(st.generation);
         let opps = opponents(&cfg, &st.hof, st.level, &mut st.rng);
         let terrains = eval::terrains(&mut st.rng, cfg.matches, cfg.density);
+        let use_gpu = device.pick();
+        let t_step = Instant::now();
         let rep = st.trainer.step(StepEnv {
             cfg: &cfg,
+            use_gpu,
             generation: st.generation,
             opponents: opps,
             terrains,
             shaping,
             rng: &mut st.rng,
         });
+        if let Some(l) = device.record(use_gpu, t_step.elapsed().as_secs_f64(), rep.ticks) {
+            let _ = tx.send(Msg::Log(format!("Gen {}: {l}", st.generation)));
+        }
 
         let champ = rep.champion.clone();
         let arch = cfg.arch;

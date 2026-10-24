@@ -1,9 +1,9 @@
 //! OpenAI-style evolution strategy: antithetic Gaussian perturbations of one mean
 //! parameter vector, centered-rank fitness shaping, Adam update.
 
-use super::eval::eval_population;
+use super::eval::eval_fixed;
 use super::{StepEnv, StepReport, TrainConfig};
-use crate::nn::{Brain, Genes, fixed};
+use crate::nn::{Genes, fixed};
 use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -61,9 +61,11 @@ impl Es {
                 .map(|(t, e)| t + sign * p.sigma * e)
                 .collect()
         };
-        let out = eval_population(
-            &|i| Box::new(Brain::new(arch, &Genes::Fixed(member(i)))),
-            pairs * 2,
+        let members: Vec<Vec<f32>> = (0..pairs * 2).map(member).collect();
+        let out = eval_fixed(
+            arch,
+            &members,
+            env.use_gpu,
             &env.opponents,
             &env.terrains,
             env.shaping,

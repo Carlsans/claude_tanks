@@ -195,6 +195,10 @@ impl FixedNet {
         &self.h
     }
 
+    pub fn set_hidden_state(&mut self, h: &[f32]) {
+        self.h.copy_from_slice(h);
+    }
+
     /// One step; returns tanh outputs in [-1, 1].
     pub fn forward(&mut self, x: &[f32]) -> [f32; N_OUT] {
         let p = &self.params;

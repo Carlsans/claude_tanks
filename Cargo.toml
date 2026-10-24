@@ -4,9 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytemuck = { version = "1.25", features = ["derive"], optional = true }
 crossbeam-channel = "0.5.17"
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui_plot = "0.38"
+pollster = { version = "1", optional = true }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+wgpu = { version = "30.0.1", optional = true, default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+
+[features]
+default = ["gpu"]
+# GPU-batched network evaluation for GA/ES training (wgpu: Vulkan, DX12, Metal).
+# Build with --no-default-features for a CPU-only binary; the default build
+# also falls back to the CPU at runtime when no GPU is found.
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
