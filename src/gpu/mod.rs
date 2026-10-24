@@ -28,6 +28,11 @@ pub fn get() -> Option<&'static Gpu> {
     GPU.get_or_init(|| Gpu::new().ok()).as_ref()
 }
 
+/// Whether the GPU kernels cover this architecture.
+pub fn supports(arch: Arch) -> bool {
+    !matches!(arch, Arch::Neat | Arch::GruClock)
+}
+
 /// Human-readable adapter status.
 pub fn status() -> String {
     match get() {
@@ -180,6 +185,7 @@ impl Gpu {
                 mats.push((*wo, N_OUT, h));
                 &self.gru
             }
+            Layout::GruClock { .. } => unreachable!("no GPU kernel for {arch:?}"),
         };
         let mut data = Vec::with_capacity(n * sets.len());
         for s in sets {

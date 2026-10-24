@@ -21,20 +21,31 @@ pub enum Arch {
     Gru,
     /// Gated recurrent unit, 64 hidden.
     GruL,
+    /// GRU (32) plus 16 clocks with fixed time constants from 0.1 s to 30 s,
+    /// and a direct path from the inputs to the outputs.
+    GruClock,
     /// Evolving topology (NEAT), recurrent connections allowed.
     Neat,
 }
 
 impl Arch {
-    pub const ALL: [Arch; 6] = [
+    pub const ALL: [Arch; 7] = [
         Arch::MlpS,
         Arch::MlpL,
         Arch::Elman,
         Arch::Gru,
         Arch::GruL,
+        Arch::GruClock,
         Arch::Neat,
     ];
-    pub const FIXED: [Arch; 5] = [Arch::MlpS, Arch::MlpL, Arch::Elman, Arch::Gru, Arch::GruL];
+    pub const FIXED: [Arch; 6] = [
+        Arch::MlpS,
+        Arch::MlpL,
+        Arch::Elman,
+        Arch::Gru,
+        Arch::GruL,
+        Arch::GruClock,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -43,6 +54,7 @@ impl Arch {
             Arch::Elman => "Elman RNN (32)",
             Arch::Gru => "GRU (32)",
             Arch::GruL => "GRU (64)",
+            Arch::GruClock => "GRU + clocks (32+16)",
             Arch::Neat => "NEAT",
         }
     }
@@ -54,6 +66,7 @@ impl Arch {
             Arch::Elman => "elman",
             Arch::Gru => "gru",
             Arch::GruL => "gru_l",
+            Arch::GruClock => "gru_clock",
             Arch::Neat => "neat",
         }
     }

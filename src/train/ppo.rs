@@ -414,6 +414,8 @@ fn scale_output(layout: &Layout, p: &mut [f32], k: f32) {
             (w, i * o)
         }
         Layout::Elman { h, wo, .. } | Layout::Gru { h, wo, .. } => (*wo, N_OUT * h),
+        // The direct input path follows the output weights.
+        Layout::GruClock { h, k, wo, .. } => (*wo, N_OUT * (h + k + N_IN)),
     };
     p[w..w + n].iter_mut().for_each(|v| *v *= k);
 }

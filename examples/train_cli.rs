@@ -1,6 +1,6 @@
 //! Headless training: `cargo run --release --example train_cli -- <arch> <method> <generations>`
 //! [key=value ...] where key is a TrainConfig path, e.g. `ppo.lr=0.001 population=32 density=[0,0.5]`.
-//! arch: mlp_s | mlp_l | elman | gru | neat, method: ga | neat | ppo
+//! arch: mlp_s | mlp_l | elman | gru | gru_l | gru_clock | neat, method: ga | es | neat | ppo
 use claude_tanks::nn::Arch;
 use claude_tanks::train::{Method, Msg, TrainConfig, spawn};
 

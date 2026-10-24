@@ -31,6 +31,39 @@ pub enum Layout {
         wo: usize,
         bo: usize,
     },
+    /// GRU whose gates also read `k` clocks: leaky units with fixed time
+    /// constants (see `clock_decay`), written from [x, h]. The output reads
+    /// [h, clocks] and, through a direct linear path, the inputs.
+    GruClock {
+        h: usize,
+        k: usize,
+        /// Gate weights over [x, clocks] for z, r, n (each h x (N_IN + k)).
+        wx: [usize; 3],
+        wh: [usize; 3],
+        b: [usize; 3],
+        /// Clock writer over [x, h] (k x (N_IN + h)).
+        wc: usize,
+        bc: usize,
+        /// Output over [h, clocks] (N_OUT x (h + k)), directly followed by the
+        /// input-to-output path (N_OUT x N_IN).
+        wo: usize,
+        ws: usize,
+        bo: usize,
+    },
+}
+
+/// Clocks in `Arch::GruClock`.
+pub const CLOCKS: usize = 16;
+
+/// Per-decision decay of each clock: time constants spread evenly on a log
+/// scale from 3 decisions (0.1 s) to 900 (30 s).
+pub fn clock_decay(k: usize) -> Vec<f32> {
+    (0..k)
+        .map(|j| {
+            let tau = 3.0 * 300f32.powf(j as f32 / (k - 1).max(1) as f32);
+            (-1.0 / tau).exp()
+        })
+        .collect()
 }
 
 impl Layout {
@@ -76,6 +109,22 @@ impl Layout {
                     bo: take(N_OUT),
                 }
             }
+            Arch::GruClock => {
+                let (h, k) = (32, CLOCKS);
+                let u = N_IN + k;
+                Layout::GruClock {
+                    h,
+                    k,
+                    wx: [take(h * u), take(h * u), take(h * u)],
+                    wh: [take(h * h), take(h * h), take(h * h)],
+                    b: [take(h), take(h), take(h)],
+                    wc: take(k * (N_IN + h)),
+                    bc: take(k),
+                    wo: take(N_OUT * (h + k)),
+                    ws: take(N_OUT * N_IN),
+                    bo: take(N_OUT),
+                }
+            }
             Arch::Neat => panic!("NEAT has no fixed layout"),
         };
         (layout, n)
@@ -100,6 +149,7 @@ impl Layout {
         match self {
             Layout::Mlp(_) => 0,
             Layout::Elman { h, .. } | Layout::Gru { h, .. } => *h,
+            Layout::GruClock { h, k, .. } => h + k,
         }
     }
 }
@@ -132,8 +182,82 @@ pub fn init_params(arch: Arch, rng: &mut Rng) -> Vec<f32> {
             }
             fill(*wo, N_OUT, *h);
         }
+        Layout::GruClock {
+            h,
+            k,
+            wx,
+            wh,
+            wc,
+            wo,
+            ws,
+            ..
+        } => {
+            for g in 0..3 {
+                fill(wx[g], *h, N_IN + k);
+                fill(wh[g], *h, *h);
+            }
+            fill(*wc, *k, N_IN + h);
+            fill(*wo, N_OUT, h + k);
+            fill(*ws, N_OUT, N_IN);
+        }
     }
     p
+}
+
+/// Copies a trained GRU into the GRU + clocks architecture of the same size.
+/// The copy computes the same outputs: its gates and outputs ignore the
+/// clocks and the direct path until training connects them. The clock
+/// writers get random weights, so the clocks already tick.
+pub fn transplant(from: Arch, p: &[f32], to: Arch, rng: &mut Rng) -> Option<Vec<f32>> {
+    if !matches!(from, Arch::Gru | Arch::GruL) || to != Arch::GruClock {
+        return None;
+    }
+    let (
+        Layout::Gru {
+            h,
+            wx,
+            wh,
+            b,
+            wo,
+            bo,
+        },
+        Layout::GruClock {
+            h: h2,
+            k,
+            wx: wx2,
+            wh: wh2,
+            b: b2,
+            wo: wo2,
+            ws,
+            bo: bo2,
+            ..
+        },
+    ) = (Layout::new(from).0, Layout::new(to).0)
+    else {
+        return None;
+    };
+    if h != h2 || p.len() != from.param_count() {
+        return None;
+    }
+    let mut q = init_params(to, rng);
+    let u = N_IN + k;
+    for g in 0..3 {
+        for r in 0..h {
+            let row = wx2[g] + r * u;
+            q[row..row + N_IN].copy_from_slice(&p[wx[g] + r * N_IN..wx[g] + (r + 1) * N_IN]);
+            q[row + N_IN..row + u].fill(0.0);
+        }
+        q[wh2[g]..wh2[g] + h * h].copy_from_slice(&p[wh[g]..wh[g] + h * h]);
+        q[b2[g]..b2[g] + h].copy_from_slice(&p[b[g]..b[g] + h]);
+    }
+    for o in 0..N_OUT {
+        let row = wo2 + o * (h + k);
+        q[row..row + h].copy_from_slice(&p[wo + o * h..wo + (o + 1) * h]);
+        q[row + h..row + h + k].fill(0.0);
+    }
+    q[ws..ws + N_OUT * N_IN].fill(0.0);
+    q[bo2..bo2 + N_OUT].copy_from_slice(&p[bo..bo + N_OUT]);
+    Some(q)
 }
 
 /// y = W x + b (W is rows x cols, row-major), accumulated into `y`.
@@ -170,6 +294,8 @@ pub struct FixedNet {
     pub params: Vec<f32>,
     layout: Layout,
     h: Vec<f32>,
+    /// Clock decays (GRU + clocks only).
+    decay: Vec<f32>,
     buf: Vec<Vec<f32>>,
 }
 
@@ -178,12 +304,17 @@ impl FixedNet {
         let (layout, n) = Layout::new(arch);
         assert_eq!(params.len(), n, "parameter count mismatch for {arch:?}");
         let h = vec![0.0; layout.hidden()];
+        let decay = match &layout {
+            Layout::GruClock { k, .. } => clock_decay(*k),
+            _ => Vec::new(),
+        };
         FixedNet {
             arch,
             params,
             layout,
             h,
-            buf: vec![Vec::new(); 4],
+            decay,
+            buf: vec![Vec::new(); 6],
         }
     }
 
@@ -242,7 +373,7 @@ impl FixedNet {
                 bo,
             } => {
                 let h = *h;
-                let [z, r, n, rh] = &mut self.buf[..] else {
+                let [z, r, n, rh, ..] = &mut self.buf[..] else {
                     unreachable!()
                 };
                 z.clear();
@@ -267,6 +398,63 @@ impl FixedNet {
                 }
                 out.copy_from_slice(&p[*bo..*bo + N_OUT]);
                 matvec_add(&p[*wo..*wo + N_OUT * h], &self.h, &mut out);
+                out.iter_mut().for_each(|v| *v = v.tanh());
+            }
+            Layout::GruClock {
+                h,
+                k,
+                wx,
+                wh,
+                b,
+                wc,
+                bc,
+                wo,
+                ws,
+                bo,
+            } => {
+                let (h, k) = (*h, *k);
+                let nu = N_IN + k;
+                let [z, r, n, rh, u, a] = &mut self.buf[..] else {
+                    unreachable!()
+                };
+                // The state is [h, clocks].
+                let (hs, cs) = self.h.split_at_mut(h);
+                u.clear();
+                u.extend_from_slice(x);
+                u.extend_from_slice(cs);
+                z.clear();
+                z.extend_from_slice(&p[b[0]..b[0] + h]);
+                r.clear();
+                r.extend_from_slice(&p[b[1]..b[1] + h]);
+                n.clear();
+                n.extend_from_slice(&p[b[2]..b[2] + h]);
+                matvec_add(&p[wx[0]..wx[0] + h * nu], u, z);
+                matvec_add(&p[wh[0]..wh[0] + h * h], hs, z);
+                matvec_add(&p[wx[1]..wx[1] + h * nu], u, r);
+                matvec_add(&p[wh[1]..wh[1] + h * h], hs, r);
+                z.iter_mut().for_each(|v| *v = sigmoid(*v));
+                r.iter_mut().for_each(|v| *v = sigmoid(*v));
+                rh.clear();
+                rh.extend(r.iter().zip(hs.iter()).map(|(a, b)| a * b));
+                matvec_add(&p[wx[2]..wx[2] + h * nu], u, n);
+                matvec_add(&p[wh[2]..wh[2] + h * h], rh, n);
+                for j in 0..h {
+                    let nv = n[j].tanh();
+                    hs[j] = (1.0 - z[j]) * nv + z[j] * hs[j];
+                }
+                // Clocks: each one leaks toward what the writer says.
+                u.truncate(N_IN);
+                u.extend_from_slice(hs);
+                a.clear();
+                a.extend_from_slice(&p[*bc..*bc + k]);
+                matvec_add(&p[*wc..*wc + k * (N_IN + h)], u, a);
+                for j in 0..k {
+                    let d = self.decay[j];
+                    cs[j] = d * cs[j] + (1.0 - d) * a[j].tanh();
+                }
+                out.copy_from_slice(&p[*bo..*bo + N_OUT]);
+                matvec_add(&p[*wo..*wo + N_OUT * (h + k)], &self.h, &mut out);
+                matvec_add(&p[*ws..*ws + N_OUT * N_IN], x, &mut out);
                 out.iter_mut().for_each(|v| *v = v.tanh());
             }
         }

@@ -485,7 +485,7 @@ impl DeviceChoice {
         #[cfg(feature = "gpu")]
         let possible = cfg.use_gpu
             && matches!(cfg.method, Method::Ga | Method::Es)
-            && cfg.arch != Arch::Neat
+            && crate::gpu::supports(cfg.arch)
             && crate::gpu::get().is_some();
         #[cfg(not(feature = "gpu"))]
         let possible = {
@@ -565,6 +565,8 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 .flatten()
                 .and_then(|m| match m.genes {
                     Genes::Fixed(p) if m.arch == cfg.arch => Some(p),
+                    // A smaller architecture embedded in a bigger one.
+                    Genes::Fixed(p) => crate::nn::fixed::transplant(m.arch, &p, cfg.arch, &mut rng),
                     _ => None,
                 });
             if !cfg.init_model.is_empty() {

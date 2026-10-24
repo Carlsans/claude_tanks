@@ -13,7 +13,10 @@ fn gpu_matches_cpu_forward() {
         return;
     };
     let mut rng = Rng::new(3);
-    for arch in Arch::FIXED {
+    for arch in Arch::FIXED
+        .into_iter()
+        .filter(|a| claude_tanks::gpu::supports(*a))
+    {
         let sets: Vec<Vec<f32>> = (0..3).map(|_| init_params(arch, &mut rng)).collect();
         // Five rows, mixing parameter sets.
         let row_param = [0u32, 1, 2, 1, 0];

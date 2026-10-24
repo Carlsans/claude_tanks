@@ -283,6 +283,9 @@ pub fn eval_population_gpu(
     terrains: &[Terrain],
     shaping: Shaping,
 ) -> Result<EvalOutcome, String> {
+    if !crate::gpu::supports(arch) {
+        return Err(format!("no GPU kernel for {}", arch.name()));
+    }
     let (n, k) = (members.len(), opps.len());
     let mut sets: Vec<&[f32]> = members.iter().map(|m| m.as_slice()).collect();
     // Opponent networks of the same architecture run on the GPU too.

@@ -50,6 +50,7 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 | Elman RNN | 32 recurrent units | 2 309 |
 | GRU | 32 gated recurrent units | 6 597 |
 | GRU-L | 64 gated recurrent units | 19 333 |
+| GRU + clocks | GRU-32 whose gates also read 16 clocks, and a direct path from inputs to outputs. A clock is a leaky unit with a fixed time constant (0.1 s to 30 s, spread on a log scale) that the network writes into, so it can time holds and jinks the way the bots do. A trained GRU-32 can be copied into it unchanged (`init_model`) | 9 455 |
 | NEAT | evolving topology, recurrent links allowed | grows |
 
 ## Training methods
@@ -166,4 +167,4 @@ The architecture mattered little: GRU-32, GRU-64 and MLP-L land within a few Elo
 - GA lost what imitation gave it (fixed since: smaller mutations when starting from imitation).
 - NEAT from scratch stayed far behind.
 
-Trained weights are in [`models/champions/`](models/champions) and the imitation-pretrained starting points are in [`models/pretrained/`](models/pretrained).
+Trained weights are in [`models/champions/`](models/champions) and the imitation-pretrained starting points are in [`models/pretrained/`](models/pretrained). Every finished day-run's `best`, `latest` and `ema` networks are published in [`models/day/`](models/day) (a `git pull` brings them).
