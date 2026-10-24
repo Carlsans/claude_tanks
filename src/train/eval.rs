@@ -136,7 +136,9 @@ pub fn eval_fixed(
 #[cfg(feature = "gpu")]
 struct GpuJob {
     world: World,
-    scripted: Option<ScriptedBot>,
+    /// Opponent played on the CPU (scripted bot, or a network of another
+    /// architecture); `None` when the opponent is a GPU row.
+    cpu_op: Option<Box<dyn Controller + Send>>,
     acts: [Action; 2],
 }
 
@@ -172,7 +174,7 @@ impl<'a, 'g> Group<'a, 'g> {
     }
 
     /// One parallel pass: apply the latest outputs, advance each world to its next
-    /// decision tick, and write the next observations (and scripted actions).
+    /// decision tick, and write the next observations (and CPU opponent actions).
     fn advance(&mut self) {
         use crate::nn::fixed::{N_IN, N_OUT};
         let first = self.first;
@@ -189,7 +191,7 @@ impl<'a, 'g> Group<'a, 'g> {
                 }
                 if !first {
                     jb.acts[0] = Action::from_outputs(&o[..N_OUT]);
-                    if jb.scripted.is_none() {
+                    if jb.cpu_op.is_none() {
                         jb.acts[1] = Action::from_outputs(&o[N_OUT..]);
                     }
                     for _ in 0..ACTION_REPEAT {
@@ -204,8 +206,8 @@ impl<'a, 'g> Group<'a, 'g> {
                 }
                 ob[..N_IN].copy_from_slice(&jb.world.observe(0));
                 let o1 = jb.world.observe(1);
-                match &mut jb.scripted {
-                    Some(bot) => jb.acts[1] = bot.act(&o1),
+                match &mut jb.cpu_op {
+                    Some(op) => jb.acts[1] = op.act(&o1),
                     None => ob[N_IN..].copy_from_slice(&o1),
                 }
                 1
@@ -236,7 +238,7 @@ impl<'a, 'g> Group<'a, 'g> {
                 n
             };
             let mut me = net(2 * j);
-            let mut op = jb.scripted.is_none().then(|| net(2 * j + 1));
+            let mut op = jb.cpu_op.is_none().then(|| net(2 * j + 1));
             // Observations for this decision tick are already in `obs`.
             let mut o0: [f32; N_IN] = obs[2 * j * N_IN..(2 * j + 1) * N_IN].try_into().unwrap();
             let mut o1: [f32; N_IN] = obs[(2 * j + 1) * N_IN..(2 * j + 2) * N_IN]
@@ -258,8 +260,8 @@ impl<'a, 'g> Group<'a, 'g> {
                 }
                 o0 = jb.world.observe(0);
                 o1 = jb.world.observe(1);
-                if let Some(bot) = &mut jb.scripted {
-                    jb.acts[1] = bot.act(&o1);
+                if let Some(cpu_op) = &mut jb.cpu_op {
+                    jb.acts[1] = cpu_op.act(&o1);
                 }
             }
         });
@@ -270,9 +272,10 @@ impl<'a, 'g> Group<'a, 'g> {
 
 /// GPU version of `eval_population`: every match advances in lockstep, and one
 /// GPU dispatch per decision step computes all the networks. Every match owns two
-/// GPU rows (candidate, opponent); the opponent row is unused against scripted bots.
+/// GPU rows (candidate, opponent); the opponent row is unused when the opponent
+/// runs on the CPU (scripted bots, networks of another architecture).
 #[cfg(feature = "gpu")]
-fn eval_population_gpu(
+pub fn eval_population_gpu(
     gpu: &crate::gpu::Gpu,
     arch: Arch,
     members: &[Vec<f32>],
@@ -282,30 +285,30 @@ fn eval_population_gpu(
 ) -> Result<EvalOutcome, String> {
     let (n, k) = (members.len(), opps.len());
     let mut sets: Vec<&[f32]> = members.iter().map(|m| m.as_slice()).collect();
-    let mut opp_set = vec![0u32; k];
+    // Opponent networks of the same architecture run on the GPU too.
+    let mut opp_set: Vec<Option<u32>> = vec![None; k];
     for (m, o) in opps.iter().enumerate() {
-        if let Opponent::Net(a, g) = o {
-            match &**g {
-                Genes::Fixed(p) if *a == arch => {
-                    opp_set[m] = sets.len() as u32;
-                    sets.push(p);
-                }
-                _ => return Err("opponent of another architecture".into()),
-            }
+        if let Opponent::Net(a, g) = o
+            && let Genes::Fixed(p) = &**g
+            && *a == arch
+        {
+            opp_set[m] = Some(sets.len() as u32);
+            sets.push(p);
         }
     }
     let mut row_param = Vec::with_capacity(2 * n * k);
     let mut jobs: Vec<GpuJob> = (0..n * k)
         .map(|j| {
             let m = j % k;
-            row_param.extend([(j / k) as u32, opp_set[m]]);
-            let scripted = match &opps[m] {
-                Opponent::Scripted(s, l) => Some(ScriptedBot::with_level(*s, *l)),
-                Opponent::Net(..) => None,
+            row_param.extend([(j / k) as u32, opp_set[m].unwrap_or(0)]);
+            let cpu_op: Option<Box<dyn Controller + Send>> = match &opps[m] {
+                _ if opp_set[m].is_some() => None,
+                Opponent::Scripted(s, l) => Some(Box::new(ScriptedBot::with_level(*s, *l))),
+                Opponent::Net(a, g) => Some(Box::new(Brain::new(*a, g))),
             };
             GpuJob {
                 world: World::new(terrains[m].clone(), m % 2 == 1),
-                scripted,
+                cpu_op,
                 acts: [Action::default(); 2],
             }
         })

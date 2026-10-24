@@ -73,10 +73,12 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 
 All methods share the same training loop:
 - **Self-play:** opponents are drawn from a hall of fame of past champions and from a scripted bot.
+- **League:** `league` lists saved models of any architecture that join the opponents as fixed sparring partners (`league_share` of the non-scripted matches). In the GUI, tick champions under *Opponents & shaping*.
 - **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie*, a *veteran* and finally an *ace*. It moves up a level once the champion wins at least 55% of its matches against the current level. At the top, the scripted opponents mix the veteran and the ace: training against the ace alone makes networks forget the veteran.
 - **Shaping:** small rewards for tracking the enemy on radar, pointing the gun at it, near-misses and survival. The shaping weight anneals over training. PPO uses potential-based shaping, which leaves the optimal policy unchanged.
 - **Scoring:** after every generation, the champion plays a fixed set of matches against the veteran and the ace. `best.json` is the snapshot with the best average win−loss against both.
 - **Fine-tuning:** `init_model` starts a run from any saved model of the same architecture.
+- **Weight averaging (ES):** the run also keeps an exponential moving average of the weights (`ema_decay`, default 0.99) and saves it as `ema.json`.
 
 ## The GUI
 
@@ -85,7 +87,7 @@ All methods share the same training loop:
   - Start, pause, stop, or resume a saved run.
   - Live plots show fitness, win/draw/loss against the veteran, and method details: species and network size for NEAT, losses, KL and action std for PPO.
   - No battles are drawn while training.
-  - Each run saves to `models/<run>/` (`best.json`, `latest.json`, a snapshot every 25 generations, and a resumable `run.state`).
+  - Each run saves to `models/<run>/` (`best.json`, `latest.json`, `ema.json` for ES, a snapshot every 25 generations, and a resumable `run.state`).
 - **Display**
   - Pick two pilots: any saved model or the scripted bot.
   - Set the terrain seed and density, or ask for a new random terrain each match.
@@ -100,12 +102,13 @@ All methods share the same training loop:
 
 ```
 cargo run --release --example train_cli -- gru ppo 100 population=32 ppo.lr=0.0005
+cargo run --release --example train_cli -- gru es 0 max_seconds=3600 init_model=models/champions/gru_es_night.json 'league=["models/champions/mlp_l_es_night.json"]' league_share=0.7
 cargo run --release --example benchmark_cli -- 6 100     # minutes per entry, matches per pairing
 cargo run --release --example imitate -- gru 20          # imitation only, then play the veteran
 cargo run --release --example diagnose -- models/champions/gru_es.json   # play statistics vs the veteran
 cargo run --release --example bench                      # simulation speed per architecture
 cargo run --release --example gpu_bench                  # one generation on CPU vs GPU
-cargo run --release --example evaluate -- <model> 1000   # scorecard vs veteran, ace, champion
+cargo run --release --example evaluate -- <model> 1000   # scorecard vs veteran, ace, reference, champion
 cargo run --release --example tournament -- 1000 out A=a.json B=b.json   # round robin + Elo, with both bots
 cargo test --release
 ```

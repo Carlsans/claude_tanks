@@ -73,9 +73,19 @@ pub struct TrainConfig {
     /// Start from this saved model (same architecture) instead of imitation.
     #[serde(default)]
     pub init_model: String,
-    /// Fraction of opponents that are the scripted bot (rest: hall of fame).
+    /// Fraction of opponents that are the scripted bot (rest: league and hall of fame).
     pub scripted_share: f32,
     pub hof_size: usize,
+    /// Fixed opponents: saved models of any architecture (the "league").
+    #[serde(default)]
+    pub league: Vec<String>,
+    /// Fraction of the non-scripted opponents drawn from the league (rest: hall of fame).
+    #[serde(default)]
+    pub league_share: f32,
+    /// ES: also keep an exponential moving average of the weights (saved as
+    /// `ema.json`); 0 turns it off.
+    #[serde(default = "ema_default")]
+    pub ema_decay: f32,
     pub shaping_start: f32,
     pub shaping_end: f32,
     pub shaping_gens: u32,
@@ -91,6 +101,10 @@ pub struct TrainConfig {
 
 fn yes() -> bool {
     true
+}
+
+fn ema_default() -> f32 {
+    0.99
 }
 
 impl Default for TrainConfig {
@@ -111,6 +125,9 @@ impl Default for TrainConfig {
             init_model: String::new(),
             scripted_share: 0.5,
             hof_size: 20,
+            league: Vec::new(),
+            league_share: 0.0,
+            ema_decay: ema_default(),
             shaping_start: 0.6,
             shaping_end: 0.15,
             shaping_gens: 300,
@@ -255,6 +272,9 @@ pub struct RunState {
     pub level: u8,
     pub history: Vec<GenStats>,
     pub trainer: Trainer,
+    /// Moving average of the ES weights (see `TrainConfig::ema_decay`).
+    #[serde(default)]
+    pub ema: Option<Vec<f32>>,
 }
 
 impl RunState {
@@ -361,11 +381,32 @@ fn cfg_copy_threads(cfg: &TrainConfig, resume: Option<&RunState>) -> usize {
     resume.map_or(cfg.threads, |r| r.cfg.threads).max(1)
 }
 
-/// Pick opponents for one generation: scripted bots plus hall-of-fame members.
-fn opponents(cfg: &TrainConfig, hof: &[Genes], level: u8, rng: &mut Rng) -> Vec<Opponent> {
+/// Load the league models; unreadable files are reported and skipped.
+fn load_league(cfg: &TrainConfig, tx: &Sender<Msg>) -> Vec<Opponent> {
+    cfg.league
+        .iter()
+        .filter_map(|p| match ModelFile::load(p.as_ref()) {
+            Ok(m) => Some(Opponent::Net(m.arch, Arc::new(m.genes))),
+            Err(e) => {
+                let _ = tx.send(Msg::Log(format!("League: cannot load {p}: {e}")));
+                None
+            }
+        })
+        .collect()
+}
+
+/// Pick opponents for one generation: scripted bots, league models and
+/// hall-of-fame members.
+fn opponents(
+    cfg: &TrainConfig,
+    hof: &[Genes],
+    league: &[Opponent],
+    level: u8,
+    rng: &mut Rng,
+) -> Vec<Opponent> {
     (0..cfg.matches)
         .map(|_| {
-            if hof.is_empty() || rng.chance(cfg.scripted_share) {
+            if (hof.is_empty() && league.is_empty()) || rng.chance(cfg.scripted_share) {
                 // Past the veteran, keep playing every level from the veteran up:
                 // training against the ace alone made nets forget the veteran.
                 let lvl = if level > VETERAN {
@@ -374,6 +415,8 @@ fn opponents(cfg: &TrainConfig, hof: &[Genes], level: u8, rng: &mut Rng) -> Vec<
                     level
                 };
                 Opponent::Scripted(rng.next_u64(), lvl)
+            } else if !league.is_empty() && (hof.is_empty() || rng.chance(cfg.league_share)) {
+                league[rng.below(league.len())].clone()
             } else {
                 // Favour recent champions.
                 let n = hof.len();
@@ -534,12 +577,17 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 level: 0,
                 history: Vec::new(),
                 trainer,
+                ema: None,
             }
         }
     };
     let _ = tx.send(Msg::History(st.history.clone()));
     let dir = st.cfg.run_dir();
     let mut device = DeviceChoice::new(&st.cfg);
+    let league = load_league(&st.cfg, tx);
+    if !league.is_empty() {
+        let _ = tx.send(Msg::Log(format!("League: {} models", league.len())));
+    }
     let mut paused = false;
     loop {
         // Commands.
@@ -583,7 +631,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
 
         let t0 = Instant::now();
         let shaping = cfg.shaping(st.generation);
-        let opps = opponents(&cfg, &st.hof, st.level, &mut st.rng);
+        let opps = opponents(&cfg, &st.hof, &league, st.level, &mut st.rng);
         let terrains = eval::terrains(&mut st.rng, cfg.matches, cfg.density);
         let use_gpu = device.pick();
         let t_step = Instant::now();
@@ -668,6 +716,20 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             }
         }
         let _ = m.save(&dir.join("latest.json"));
+        if cfg.method == Method::Es
+            && cfg.ema_decay > 0.0
+            && let Genes::Fixed(p) = &m.genes
+        {
+            let ema = st.ema.get_or_insert_with(|| p.clone());
+            for (e, v) in ema.iter_mut().zip(p) {
+                *e += (1.0 - cfg.ema_decay) * (v - *e);
+            }
+            if st.generation.is_multiple_of(10) {
+                let mut e = m.clone();
+                e.genes = Genes::Fixed(ema.clone());
+                let _ = e.save(&dir.join("ema.json"));
+            }
+        }
         if st.generation > 0 && st.generation.is_multiple_of(25) {
             let _ = m.save(&dir.join(format!("gen_{:05}.json", st.generation)));
         }

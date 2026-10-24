@@ -17,8 +17,23 @@ pub struct TrainTab {
     runs: Vec<PathBuf>,
     resume: Option<PathBuf>,
     x_steps: bool,
+    /// Saved champions offered as league opponents.
+    champions: Vec<PathBuf>,
     /// Set when the user asks to watch a model; taken by the app.
     pub watch_request: Option<PathBuf>,
+}
+
+/// `models/champions/*.json`, sorted by name.
+fn list_champions() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(crate::nn::models_dir().join("champions"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    v.sort();
+    v
 }
 
 impl Default for TrainTab {
@@ -34,6 +49,7 @@ impl Default for TrainTab {
             runs: list_runs(),
             resume: None,
             x_steps: false,
+            champions: list_champions(),
             watch_request: None,
         }
     }
@@ -273,6 +289,26 @@ impl TrainTab {
             ui.collapsing("Opponents & shaping", |ui| {
                 ui.add(egui::Slider::new(&mut c.scripted_share, 0.0..=1.0).text("scripted share"));
                 ui.add(egui::Slider::new(&mut c.hof_size, 1..=100).text("hall of fame size"));
+                ui.add(
+                    egui::Slider::new(&mut c.league_share, 0.0..=1.0)
+                        .text("league share (of the non-scripted opponents)"),
+                );
+                ui.collapsing(format!("League: {} models", c.league.len()), |ui| {
+                    for p in &self.champions {
+                        let path = p.display().to_string();
+                        let mut on = c.league.contains(&path);
+                        if ui
+                            .checkbox(&mut on, crate::gui::display_tab::model_label(p))
+                            .changed()
+                        {
+                            if on {
+                                c.league.push(path);
+                            } else {
+                                c.league.retain(|x| *x != path);
+                            }
+                        }
+                    }
+                });
                 ui.add(egui::Slider::new(&mut c.shaping_start, 0.0..=2.0).text("shaping start"));
                 ui.add(egui::Slider::new(&mut c.shaping_end, 0.0..=2.0).text("shaping end"));
                 ui.add(

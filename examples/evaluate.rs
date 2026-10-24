@@ -1,7 +1,7 @@
-//! Scorecard for one model: `evaluate <model.json> [matches] [label]`.
-//! Plays the veteran, the ace and the reference champion on fresh terrains (never
-//! used in training evaluation), prints one line, and appends a JSON record to
-//! `results/night/scores.jsonl`.
+//! Scorecard for one model: `evaluate <model.json> [matches] [label] [results dir]`.
+//! Plays the veteran, the ace, the reference model and the current champion on
+//! fresh terrains (never used in training evaluation), prints one line, and
+//! appends a JSON record to `<results dir>/scores.jsonl` (default `results/night`).
 use claude_tanks::bots::ScriptedBot;
 use claude_tanks::bots::scripted::{MAX_LEVEL, VETERAN};
 use claude_tanks::nn::ModelFile;
@@ -12,6 +12,7 @@ use rayon::prelude::*;
 use std::io::Write;
 
 const REFERENCE: &str = "models/champions/gru_es_40min.json";
+const CHAMPION: &str = "models/champions/gru_es_night.json";
 
 /// `matches` games of `me` against the controller built by `op(j)`; sides alternate.
 fn play(
@@ -39,11 +40,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args
         .get(1)
-        .expect("usage: evaluate <model.json> [matches] [label]");
+        .expect("usage: evaluate <model.json> [matches] [label] [results dir]");
     let matches: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1000);
     let label = args.get(3).cloned().unwrap_or_else(|| path.clone());
     let me = ModelFile::load(path.as_ref()).expect("model");
+    let out_dir = args.get(4).map_or("results/night", |s| s.as_str());
     let reference = ModelFile::load(REFERENCE.as_ref()).expect("reference model");
+    let champion = ModelFile::load(CHAMPION.as_ref()).expect("champion model");
 
     let vet = play(
         &me,
@@ -58,6 +61,7 @@ fn main() {
         8_000_000,
     );
     let refr = play(&me, &|_| Box::new(reference.brain()), matches, 9_000_000);
+    let champ = play(&me, &|_| Box::new(champion.brain()), matches, 10_000_000);
 
     let pct = |r: &Record| {
         format!(
@@ -68,10 +72,11 @@ fn main() {
         )
     };
     println!(
-        "{label}: vs veteran {}  vs ace {}  vs reference {}  (W/D/L %, {matches} matches each)",
+        "{label}: vs veteran {}  vs ace {}  vs reference {}  vs champion {}  (W/D/L %, {matches} matches each)",
         pct(&vet),
         pct(&ace),
-        pct(&refr)
+        pct(&refr),
+        pct(&champ)
     );
     let rec = serde_json::json!({
         "label": label,
@@ -83,9 +88,10 @@ fn main() {
         "vs_veteran": vet,
         "vs_ace": ace,
         "vs_reference": refr,
+        "vs_champion": champ,
         "time": claude_tanks::train::timestamp(),
     });
-    let dir = std::path::Path::new("results/night");
+    let dir = std::path::Path::new(out_dir);
     let _ = std::fs::create_dir_all(dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
