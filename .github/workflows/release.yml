@@ -26,12 +26,14 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
       - run: cargo build --release
-      - name: Package binary with champion models
+      - name: Package binary with champion and pretrained models
         shell: bash
         run: |
           mkdir -p pkg/claude_tanks/models
           cp target/release/${{ matrix.bin }} README.md LICENSE pkg/claude_tanks/
-          if [ -d models/champions ]; then cp -r models/champions pkg/claude_tanks/models/; fi
+          for d in champions pretrained; do
+            if [ -d models/$d ]; then cp -r models/$d pkg/claude_tanks/models/; fi
+          done
           if [ -d results ]; then cp -r results pkg/claude_tanks/; fi
           cd pkg
           if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../${{ matrix.asset }} claude_tanks; else tar czf ../${{ matrix.asset }} claude_tanks; fi
