@@ -35,3 +35,6 @@ Conditional redesign: if the networks can't copy the ace's timed behaviours (dod
 
 | # | Result | Verdict |
 |---|---|---|
+| E0 | MLP-L / ES, 40 min, veteran teacher: 56.5/7.5/36.0 vs veteran, 36.8/13.8/49.4 vs ace, 44.7/15.9/39.4 vs reference | MLP-L ≈ GRU-32 at equal time; slightly ahead head-to-head |
+| Eng-1 | Vectorizable matvec: network inference 1.7–2.1× faster on CPU (GRU-32 200k → 331k ticks/s/thread) | **Worked.** Every later run gets ~1.5× more generations |
+| Eng-2 | GPU evaluation (wgpu) for GA/ES, lockstep matches in two pipelined halves, tail on CPU, automatic device choice | Works and matches the CPU. Faster only for bigger nets: GRU-64 ~1.5×. GRU-32 is faster on the vectorized CPU, because simulation dominates |
