@@ -59,8 +59,13 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 - **NEAT**: speciation with an adaptive compatibility threshold, fitness sharing, stagnation culling, and add-node / add-connection mutations.
 - **PPO**: a Gaussian policy over the network's tanh outputs, a separate value MLP, GAE, the clipped surrogate objective and Adam. Recurrent nets train with truncated BPTT. All gradients are hand-written and checked against finite differences (`tests/grad.rs`). Works with MLP, Elman and GRU.
 
+**The scripted bots:**
+- The **veteran** is the fixed yardstick.
+- The **ace** is stronger. It reads the beam exactly, compensates turret and radar for the hull's turn, swings the turret with the radar to sweep twice as fast, strafes across the line of sight, and reverses whenever an enemy shell appears in its beam. It beats the veteran 67/8/24.
+- Both use exactly the networks' 34 inputs.
+
 **Imitation warm start** (on by default for MLP, Elman and GRU):
-- Before training, the net clones the scripted veteran bot from demonstrations, with DAgger rounds: the net drives and the bot labels the states it visits.
+- Before training, the net clones a scripted teacher (the ace by default) from demonstrations, with DAgger rounds: the net drives and the teacher labels the states it visits.
 - GA, ES or PPO then fine-tune from there.
 - Pretrained weights are cached in `models/pretrained/`.
 - Why it's needed: from scratch, nets learn very slowly. A diagnosis showed that a GA champion kept its radar on the enemy only 3% of the time, against 17% for the scripted bot, so it fired from stale information.
@@ -68,9 +73,10 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 
 All methods share the same training loop:
 - **Self-play:** opponents are drawn from a hall of fame of past champions and from a scripted bot.
-- **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie* and finally a *veteran*. It moves up a level once the champion wins at least 55% of its matches against the current level.
+- **Curriculum:** the scripted bot starts as a *sitting duck*, then becomes a *wanderer*, a *rookie*, a *veteran* and finally an *ace*. It moves up a level once the champion wins at least 55% of its matches against the current level. At the top, the scripted opponents mix the veteran and the ace: training against the ace alone makes networks forget the veteran.
 - **Shaping:** small rewards for tracking the enemy on radar, pointing the gun at it, near-misses and survival. The shaping weight anneals over training. PPO uses potential-based shaping, which leaves the optimal policy unchanged.
-- **Scoring:** after every generation, the champion plays a fixed set of matches against the veteran bot.
+- **Scoring:** after every generation, the champion plays a fixed set of matches against the veteran and the ace. `best.json` is the snapshot with the best average win−loss against both.
+- **Fine-tuning:** `init_model` starts a run from any saved model of the same architecture.
 
 ## The GUI
 
@@ -100,6 +106,7 @@ cargo run --release --example diagnose -- models/champions/gru_es.json   # play 
 cargo run --release --example bench                      # simulation speed per architecture
 cargo run --release --example gpu_bench                  # one generation on CPU vs GPU
 cargo run --release --example evaluate -- <model> 1000   # scorecard vs veteran, ace, champion
+cargo run --release --example tournament -- 1000 out A=a.json B=b.json   # round robin + Elo, with both bots
 cargo test --release
 ```
 
@@ -109,22 +116,34 @@ cargo test --release
 - **Windows:** builds with the MSVC toolchain.
 - **Raspberry Pi 5:** build natively on Raspberry Pi OS 64-bit, or use the release binary. It runs on the V3D OpenGL driver.
 
-## Benchmark results
+## Results
 
-Full table: [`results/benchmark.md`](results/benchmark.md). Trained weights are in [`models/champions/`](models/champions) and the imitation-pretrained starting points are in [`models/pretrained/`](models/pretrained).
+**Night run** (23–24 Oct 2026, full report in [`results/night/`](results/night/README.md)):
+- Eleven experiments, about 8 hours of training on 16 threads.
+- The night champion [`models/champions/gru_es_night.json`](models/champions/gru_es_night.json) is a GRU-32. It imitated the ace, then trained 4.5 h with ES against a mix of the veteran, the ace and its own past champions.
+- It beats both scripted bots and every earlier network.
 
-With 6 minutes of training per entry (on 16 threads, after imitation pretraining):
-- **ES is the best method.** MLP-L / ES and GRU / ES finish just below the scripted veteran, and GRU / ES plays it to an even record (47% wins, 51% losses).
-- **PPO holds the imitation level but improves on it only slowly.** GRU / PPO comes next.
-- **GA loses most of what imitation gave it:** its mutations are too coarse for pretrained weights.
-- **NEAT, which starts from scratch, stays far behind** at this budget.
+Its record over 1000 fresh matches against each opponent (`evaluate <model> 1000`):
 
-**Longer training beats the bot.** A GRU trained with ES for 40 minutes (1400 generations, 16 matches per candidate, 70% of them against the scripted bot) is saved as [`models/champions/gru_es_40min.json`](models/champions/gru_es_40min.json). On 1000 matches it had never seen (`diagnose <model> 1000`):
-
-| Pilot vs the veteran bot | Win | Draw | Loss |
+| Opponent | Win | Draw | Loss |
 |---|---|---|---|
-| GRU / ES, 40 min | **51%** | 14% | 36% |
-| GRU / ES, 6 min (benchmark) | 40% | 6% | 54% |
-| The veteran bot itself | 45% | 8% | 47% |
+| Veteran (scripted) | **48.5%** | 11.8% | 39.7% |
+| Ace (scripted) | **48.9%** | 21.8% | 29.3% |
+| Previous champion (GRU, 40 min) | **40.9%** | 32.0% | 27.1% |
 
-The 40-minute model fires more shots, and more of them hit (0.51 hits per match, against 0.41 for the 6-minute model). Most of the gain comes in the first ~900 generations.
+Final tournament, 1000 matches per pairing: night champion **1074** Elo, ace 1041, previous champion 1016, veteran 1000 ([`results/night/tournament.md`](results/night/tournament.md)).
+
+What made the difference:
+- a stronger teacher to imitate;
+- mixing the veteran and the ace as opponents (training on the ace alone over-specializes);
+- selecting champions on both bots;
+- simply training longer.
+
+The architecture mattered little: GRU-32, GRU-64 and MLP-L land within a few Elo of each other with the same recipe.
+
+**First benchmark** (6 minutes per architecture × method, veteran teacher): [`results/benchmark.md`](results/benchmark.md).
+- ES was the best method, ahead of PPO.
+- GA lost what imitation gave it (fixed since: smaller mutations when starting from imitation).
+- NEAT from scratch stayed far behind.
+
+Trained weights are in [`models/champions/`](models/champions) and the imitation-pretrained starting points are in [`models/pretrained/`](models/pretrained).
