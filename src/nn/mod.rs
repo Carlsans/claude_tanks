@@ -19,13 +19,22 @@ pub enum Arch {
     Elman,
     /// Gated recurrent unit, 32 hidden.
     Gru,
+    /// Gated recurrent unit, 64 hidden.
+    GruL,
     /// Evolving topology (NEAT), recurrent connections allowed.
     Neat,
 }
 
 impl Arch {
-    pub const ALL: [Arch; 5] = [Arch::MlpS, Arch::MlpL, Arch::Elman, Arch::Gru, Arch::Neat];
-    pub const FIXED: [Arch; 4] = [Arch::MlpS, Arch::MlpL, Arch::Elman, Arch::Gru];
+    pub const ALL: [Arch; 6] = [
+        Arch::MlpS,
+        Arch::MlpL,
+        Arch::Elman,
+        Arch::Gru,
+        Arch::GruL,
+        Arch::Neat,
+    ];
+    pub const FIXED: [Arch; 5] = [Arch::MlpS, Arch::MlpL, Arch::Elman, Arch::Gru, Arch::GruL];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -33,6 +42,7 @@ impl Arch {
             Arch::MlpL => "MLP-L (64x64)",
             Arch::Elman => "Elman RNN (32)",
             Arch::Gru => "GRU (32)",
+            Arch::GruL => "GRU (64)",
             Arch::Neat => "NEAT",
         }
     }
@@ -43,6 +53,7 @@ impl Arch {
             Arch::MlpL => "mlp_l",
             Arch::Elman => "elman",
             Arch::Gru => "gru",
+            Arch::GruL => "gru_l",
             Arch::Neat => "neat",
         }
     }

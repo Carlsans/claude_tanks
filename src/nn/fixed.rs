@@ -65,8 +65,8 @@ impl Layout {
                     bo: take(N_OUT),
                 }
             }
-            Arch::Gru => {
-                let h = 32;
+            Arch::Gru | Arch::GruL => {
+                let h = if arch == Arch::Gru { 32 } else { 64 };
                 Layout::Gru {
                     h,
                     wx: [take(h * N_IN), take(h * N_IN), take(h * N_IN)],

@@ -42,6 +42,7 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 | MLP-L | two hidden layers of 64, tanh | 6 725 |
 | Elman RNN | 32 recurrent units | 2 309 |
 | GRU | 32 gated recurrent units | 6 597 |
+| GRU-L | 64 gated recurrent units | 19 525 |
 | NEAT | evolving topology, recurrent links allowed | grows |
 
 ## Training methods
