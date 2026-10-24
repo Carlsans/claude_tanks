@@ -137,16 +137,26 @@ pub fn init_params(arch: Arch, rng: &mut Rng) -> Vec<f32> {
 }
 
 /// y = W x + b (W is rows x cols, row-major), accumulated into `y`.
+/// Eight independent partial sums let the compiler vectorize the dot products
+/// (a single running sum must stay sequential under IEEE rules).
 #[inline]
 pub fn matvec_add(w: &[f32], x: &[f32], y: &mut [f32]) {
     let cols = x.len();
+    let split = cols - cols % 8;
     for (r, yr) in y.iter_mut().enumerate() {
         let row = &w[r * cols..(r + 1) * cols];
-        let mut acc = 0.0;
-        for c in 0..cols {
-            acc += row[c] * x[c];
+        let mut acc = [0.0f32; 8];
+        for (rc, xc) in row[..split].chunks_exact(8).zip(x[..split].chunks_exact(8)) {
+            for l in 0..8 {
+                acc[l] += rc[l] * xc[l];
+            }
         }
-        *yr += acc;
+        let mut sum =
+            ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]));
+        for c in split..cols {
+            sum += row[c] * x[c];
+        }
+        *yr += sum;
     }
 }
 
