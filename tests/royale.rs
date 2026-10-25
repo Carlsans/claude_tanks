@@ -243,7 +243,7 @@ fn robocode_population_evaluation() {
         Opponent::Sparring(Sparring::Walls),
     ];
     let out = eval_population_royale(
-        &|i| net_pilot(Arch::MlpS, &members[i]),
+        &|i| net_pilot(Arch::MlpS, &members[i], false),
         members.len(),
         &opps,
         9,
@@ -252,4 +252,126 @@ fn robocode_population_evaluation() {
     assert_eq!(out.fitness.len(), 3);
     assert!(out.fitness.iter().all(|f| f.is_finite() && f.abs() <= 1.5));
     assert!(out.ticks > 0);
+}
+
+#[test]
+fn battle_memory_counts_rounds_and_hits() {
+    use claude_tanks::royale::pilot::PilotReport;
+    use std::sync::Arc;
+    let setup = Setup {
+        rounds: 4,
+        ..Setup::default()
+    };
+    let mut battle = Battle::new(setup.clone(), 2, 5);
+    let reports: Vec<_> = (0..2)
+        .map(|_| Arc::new(Mutex::new(PilotReport::default())))
+        .collect();
+    let mut pilots: Vec<Adapter> = (0..2)
+        .map(|k| {
+            Adapter::new(Driver::Scripted(ScriptedBot::with_level(k, 4)))
+                .with_report(reports[k as usize].clone())
+        })
+        .collect();
+    let mut next: Vec<Option<Intent>> = vec![None, None];
+    let mut won = [0u32; 2];
+    loop {
+        let intents: Vec<(u32, Intent)> = (0..2)
+            .filter_map(|k| next[k].take().map(|i| (k as u32 + 1, i)))
+            .collect();
+        let t = battle.step(&intents);
+        if t.turn == 1 {
+            pilots.iter_mut().for_each(|p| p.reset());
+        }
+        for (k, p) in pilots.iter_mut().enumerate() {
+            if let Some(me) = t.bot(k as u32 + 1).filter(|b| b.alive()) {
+                next[k] = Some(p.act(&View {
+                    setup: &setup,
+                    turn: t.turn,
+                    me,
+                    bullets: &[],
+                    events: &t.events[k],
+                }));
+            }
+        }
+        // Rounds count when the next one starts, so the last is left out.
+        if t.round_ended && t.round < setup.rounds {
+            for w in &t.winners {
+                won[*w as usize - 1] += 1;
+            }
+        }
+        if t.game_ended {
+            break;
+        }
+    }
+    for (k, r) in reports.iter().enumerate() {
+        let r = *r.lock().unwrap();
+        assert_eq!(r.rounds, 3, "{r:?}");
+        assert_eq!(r.won, won[k], "{r:?}");
+        assert!(r.hits > 0 && r.hits <= r.resolved, "{r:?}");
+        assert!(r.seen_turns > 0 && r.distance > 0.0, "{r:?}");
+    }
+    // Each side's hits are the other's hits taken.
+    let (a, b) = (*reports[0].lock().unwrap(), *reports[1].lock().unwrap());
+    assert!(a.hit_by <= b.hits && b.hit_by <= a.hits, "{a:?} {b:?}");
+}
+
+#[test]
+fn gru_mem_starts_as_the_gru_it_copies() {
+    use claude_tanks::nn::Arch;
+    use claude_tanks::nn::fixed::{FixedNet, init_params, transplant};
+    use claude_tanks::rng::Rng;
+    use claude_tanks::royale::memory::N_MEM;
+    use claude_tanks::sim::sensors::N_OBS;
+    let mut rng = Rng::new(3);
+    let p = init_params(Arch::Gru, &mut rng);
+    let q = transplant(Arch::Gru, &p, Arch::GruMem, &mut rng).expect("transplant");
+    assert_eq!(q.len(), Arch::GruMem.param_count());
+    let (mut a, mut b) = (FixedNet::new(Arch::Gru, p), FixedNet::new(Arch::GruMem, q));
+    for _ in 0..20 {
+        let x: Vec<f32> = (0..N_OBS + N_MEM).map(|_| rng.gauss()).collect();
+        // Equal up to the order of the sums.
+        let (ya, yb) = (a.forward(&x[..N_OBS]), b.forward(&x));
+        assert!(
+            ya.iter().zip(&yb).all(|(u, v)| (u - v).abs() < 1e-5),
+            "{ya:?} {yb:?}"
+        );
+    }
+    // Outside Robocode battles the memory inputs are missing: zeros.
+    b.reset();
+    let x: Vec<f32> = (0..N_OBS).map(|_| rng.gauss()).collect();
+    b.forward(&x);
+}
+
+#[test]
+fn keep_state_carries_the_network_over_rounds() {
+    use claude_tanks::nn::fixed::init_params;
+    use claude_tanks::nn::{Arch, Brain, Genes};
+    use claude_tanks::rng::Rng;
+    let setup = Setup::default();
+    let mut battle = Battle::new(setup.clone(), 2, 1);
+    let t = battle.step(&[]);
+    let me = t.bot(1).unwrap();
+    let params = init_params(Arch::Gru, &mut Rng::new(8));
+    for keep in [false, true] {
+        let mut a = Adapter::new(Driver::Net(Brain::new(
+            Arch::Gru,
+            &Genes::Fixed(params.clone()),
+        )));
+        a.keep_state = keep;
+        for _ in 0..5 {
+            a.act(&View {
+                setup: &setup,
+                turn: 1,
+                me,
+                bullets: &[],
+                events: &[],
+            });
+        }
+        a.reset();
+        let Driver::Net(Brain::Fixed(n)) = &a.driver else {
+            unreachable!()
+        };
+        let kept = n.hidden_state().iter().any(|v| *v != 0.0);
+        assert_eq!(kept, keep);
+    }
 }

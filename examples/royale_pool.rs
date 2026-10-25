@@ -40,7 +40,12 @@ fn main() {
                     let Some((bot, seed)) = jobs.lock().unwrap().next() else {
                         break;
                     };
-                    let r = pool.battle(bot, net_pilot(model.arch, p), rounds, seed);
+                    let r = pool.battle(
+                        bot,
+                        net_pilot(model.arch, p, model.keep_state),
+                        rounds,
+                        seed,
+                    );
                     let mut res = results.lock().unwrap();
                     match r {
                         Some(r) => {

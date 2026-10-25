@@ -7,6 +7,7 @@
 
 pub mod battle;
 pub mod duel;
+pub mod memory;
 pub mod pilot;
 pub mod pool;
 pub mod protocol;

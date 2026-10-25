@@ -47,12 +47,15 @@ impl Opponent {
     }
 }
 
-/// One of our networks as a pilot under Robocode rules.
-pub fn net_pilot(arch: Arch, params: &[f32]) -> Box<dyn Pilot> {
-    Box::new(Adapter::new(Driver::Net(Brain::new(
+/// One of our networks as a pilot under Robocode rules; `keep_state`: as
+/// `ModelFile::keep_state`.
+pub fn net_pilot(arch: Arch, params: &[f32], keep_state: bool) -> Box<dyn Pilot> {
+    let mut a = Adapter::new(Driver::Net(Brain::new(
         arch,
         &Genes::Fixed(params.to_vec()),
-    ))))
+    )));
+    a.keep_state = keep_state;
+    Box::new(a)
 }
 
 /// Fitness of side 0 of a Robocode duel: +1 win, 0 draw, -1 loss, plus shaping
@@ -128,7 +131,7 @@ pub fn eval_members(env: &StepEnv, members: &[Vec<f32>]) -> EvalOutcome {
         Rules::Robocode => {
             let seed = cfg.seed ^ (env.generation as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
             let mut out = eval_population_royale(
-                &|i| net_pilot(cfg.arch, &members[i]),
+                &|i| net_pilot(cfg.arch, &members[i], cfg.keep_state),
                 members.len(),
                 &env.opponents,
                 seed,
@@ -144,7 +147,7 @@ pub fn eval_members(env: &StepEnv, members: &[Vec<f32>]) -> EvalOutcome {
                         (first..first + b).map(move |k| (i, env.robot_plan[k], k as u64))
                     })
                     .collect();
-                let make = |i: usize| net_pilot(cfg.arch, &members[i]);
+                let make = |i: usize| net_pilot(cfg.arch, &members[i], cfg.keep_state);
                 let (sums, record) =
                     eval_robots(pool, &make, &jobs, cfg.robot_rounds, seed, env.shaping);
                 // Duels weigh 1 each, robot rounds 1 each.

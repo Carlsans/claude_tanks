@@ -26,10 +26,14 @@ pub enum Arch {
     GruClock,
     /// Evolving topology (NEAT), recurrent connections allowed.
     Neat,
+    /// GRU (32) that also reads the battle memory (Robocode rules: who wins
+    /// the rounds, hit rates, where bullets find each side; see
+    /// `royale::memory`). Elsewhere those inputs stay at zero.
+    GruMem,
 }
 
 impl Arch {
-    pub const ALL: [Arch; 7] = [
+    pub const ALL: [Arch; 8] = [
         Arch::MlpS,
         Arch::MlpL,
         Arch::Elman,
@@ -37,6 +41,7 @@ impl Arch {
         Arch::GruL,
         Arch::GruClock,
         Arch::Neat,
+        Arch::GruMem,
     ];
     pub const FIXED: [Arch; 6] = [
         Arch::MlpS,
@@ -56,6 +61,7 @@ impl Arch {
             Arch::GruL => "GRU (64)",
             Arch::GruClock => "GRU + clocks (32+16)",
             Arch::Neat => "NEAT",
+            Arch::GruMem => "GRU + battle memory (32)",
         }
     }
 
@@ -68,6 +74,7 @@ impl Arch {
             Arch::GruL => "gru_l",
             Arch::GruClock => "gru_clock",
             Arch::Neat => "neat",
+            Arch::GruMem => "gru_mem",
         }
     }
 
@@ -80,6 +87,14 @@ impl Arch {
 
     pub fn recurrent(self) -> bool {
         !matches!(self, Arch::MlpS | Arch::MlpL)
+    }
+
+    /// Battle-memory inputs read after the usual observations.
+    pub fn memory_inputs(self) -> usize {
+        match self {
+            Arch::GruMem => crate::royale::memory::N_MEM,
+            _ => 0,
+        }
     }
 }
 
@@ -104,6 +119,10 @@ pub struct ModelFile {
     /// The rules it was trained under.
     #[serde(default)]
     pub rules: crate::sim::Rules,
+    /// Robocode rules: the network's state carries over from one round of a
+    /// battle to the next.
+    #[serde(default)]
+    pub keep_state: bool,
     pub genes: Genes,
 }
 
@@ -138,6 +157,14 @@ impl Brain {
         match genes {
             Genes::Fixed(p) => Brain::Fixed(FixedNet::new(arch, p.clone())),
             Genes::Neat(g) => Brain::Neat(NeatNet::new(g)),
+        }
+    }
+
+    /// Battle-memory inputs the network reads after the observations.
+    pub fn memory_inputs(&self) -> usize {
+        match self {
+            Brain::Fixed(n) => n.arch.memory_inputs(),
+            Brain::Neat(_) => 0,
         }
     }
 

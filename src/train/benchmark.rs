@@ -43,7 +43,7 @@ pub fn all_entries() -> Vec<(Arch, Method)> {
         .flat_map(|m| {
             Arch::ALL
                 .into_iter()
-                .filter(move |a| m.supports(*a))
+                .filter(move |a| m.supports(*a) && a.memory_inputs() == 0)
                 .map(move |a| (a, m))
         })
         .collect()

@@ -27,7 +27,7 @@ fn main() {
     let out_dir = args.get(4).map_or("results/robocode", |s| s.as_str());
     let me = ModelFile::load(path.as_ref()).expect("model");
     let (arch, p) = (me.arch, params(&me));
-    let make = || net_pilot(arch, &p);
+    let make = || net_pilot(arch, &p, me.keep_state);
     let bots: Vec<(Sparring, Record)> = Sparring::ALL
         .iter()
         .map(|k| (*k, vs_sparring(&make, duels, *k).0))
@@ -38,7 +38,10 @@ fn main() {
     let res: Vec<Option<usize>> = (0..duels)
         .into_par_iter()
         .map(|j| {
-            let (mut a, mut b) = (net_pilot(arch, &p), net_pilot(ra, &rp));
+            let (mut a, mut b) = (
+                net_pilot(arch, &p, me.keep_state),
+                net_pilot(ra, &rp, r.keep_state),
+            );
             let seed = 700_000_000 + j as u64;
             if j % 2 == 0 {
                 claude_tanks::royale::duel::duel(seed, a.as_mut(), b.as_mut()).winner

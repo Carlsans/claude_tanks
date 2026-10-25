@@ -19,7 +19,7 @@ impl Entrant {
     fn make(&self) -> Box<dyn Pilot> {
         match self {
             Entrant::Model(m) => match &m.genes {
-                Genes::Fixed(p) => net_pilot(m.arch, p),
+                Genes::Fixed(p) => net_pilot(m.arch, p, m.keep_state),
                 Genes::Neat(_) => panic!("fixed-topology models only"),
             },
             Entrant::Port(k) => Box::new(k.pilot()),

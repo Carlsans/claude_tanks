@@ -53,7 +53,8 @@ impl Method {
         match self {
             Method::Ga | Method::Es => arch != Arch::Neat,
             Method::Neat => arch == Arch::Neat,
-            Method::Ppo => arch != Arch::Neat,
+            // Gradients see the observations only, not the battle memory.
+            Method::Ppo => arch != Arch::Neat && arch.memory_inputs() == 0,
         }
     }
 }
@@ -139,6 +140,10 @@ pub struct TrainConfig {
     pub robot_active: usize,
     #[serde(default = "twenty_five")]
     pub robot_rotate: u32,
+    /// Robocode rules: the network's state carries over from one round of a
+    /// battle to the next (saved with the model).
+    #[serde(default)]
+    pub keep_state: bool,
     /// Warm start fixed-topology nets by imitating the scripted bot.
     pub imitation: imitation::ImitationParams,
     pub ga: ga::GaParams,
@@ -215,6 +220,7 @@ impl Default for TrainConfig {
             robot_slots: two(),
             robot_active: 0,
             robot_rotate: twenty_five(),
+            keep_state: false,
             imitation: imitation::ImitationParams::default(),
             ga: ga::GaParams::default(),
             es: es::EsParams::default(),
@@ -665,6 +671,7 @@ fn model(cfg: &TrainConfig, genes: Genes, s: &GenStats) -> ModelFile {
         fitness: s.best_fitness,
         vs_scripted: s.vs_scripted.win,
         rules: cfg.rules,
+        keep_state: cfg.keep_state,
         genes,
     }
 }
@@ -976,7 +983,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 let Genes::Fixed(p) = &champ else {
                     unreachable!("Robocode rules train fixed-topology nets")
                 };
-                let make = || eval::net_pilot(arch, p);
+                let make = || eval::net_pilot(arch, p, cfg.keep_state);
                 let all: Vec<(usize, Record)> = Sparring::ALL
                     .iter()
                     .enumerate()

@@ -95,7 +95,7 @@ fn check_child(arg: &str) -> Result<(), String> {
 
 /// Whether the GPU kernels cover this architecture.
 pub fn supports(arch: Arch) -> bool {
-    !matches!(arch, Arch::Neat | Arch::GruClock)
+    !matches!(arch, Arch::Neat | Arch::GruClock | Arch::GruMem)
 }
 
 /// Status without setting the GPU up (cheap enough for every frame).

@@ -336,9 +336,7 @@ impl RoyaleTab {
                 }
                 Choice::Model(p) => match ModelFile::load(p) {
                     Ok(m) => {
-                        entrants.push(Entrant::Local(Box::new(Adapter::new(Driver::Net(
-                            m.brain(),
-                        )))));
+                        entrants.push(Entrant::Local(Box::new(Adapter::for_model(&m))));
                         names.push(c.label());
                     }
                     Err(e) => {

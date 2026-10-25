@@ -39,9 +39,7 @@ fn main() {
         if let Some(path) = s.strip_prefix("model:") {
             let m = ModelFile::load(path.as_ref()).expect(path);
             names.push(m.name.clone());
-            entrants.push(Entrant::Local(Box::new(Adapter::new(Driver::Net(
-                m.brain(),
-            )))));
+            entrants.push(Entrant::Local(Box::new(Adapter::for_model(&m))));
         } else if let Some(n) = s.strip_prefix("spar:") {
             let k = Sparring::ALL
                 .into_iter()

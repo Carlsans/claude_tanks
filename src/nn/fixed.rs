@@ -23,7 +23,9 @@ pub enum Layout {
     },
     Gru {
         h: usize,
-        /// Input weights for z, r, n gates (each h x N_IN).
+        /// Inputs: the observations, then the battle memory (`Arch::GruMem`).
+        n_in: usize,
+        /// Input weights for z, r, n gates (each h x n_in).
         wx: [usize; 3],
         /// Recurrent weights for z, r, n (each h x h).
         wh: [usize; 3],
@@ -98,11 +100,13 @@ impl Layout {
                     bo: take(N_OUT),
                 }
             }
-            Arch::Gru | Arch::GruL => {
-                let h = if arch == Arch::Gru { 32 } else { 64 };
+            Arch::Gru | Arch::GruL | Arch::GruMem => {
+                let h = if arch == Arch::GruL { 64 } else { 32 };
+                let n_in = N_IN + arch.memory_inputs();
                 Layout::Gru {
                     h,
-                    wx: [take(h * N_IN), take(h * N_IN), take(h * N_IN)],
+                    n_in,
+                    wx: [take(h * n_in), take(h * n_in), take(h * n_in)],
                     wh: [take(h * h), take(h * h), take(h * h)],
                     b: [take(h), take(h), take(h)],
                     wo: take(N_OUT * h),
@@ -175,9 +179,16 @@ pub fn init_params(arch: Arch, rng: &mut Rng) -> Vec<f32> {
             fill(*wh, *h, *h);
             fill(*wo, N_OUT, *h);
         }
-        Layout::Gru { h, wx, wh, wo, .. } => {
+        Layout::Gru {
+            h,
+            n_in,
+            wx,
+            wh,
+            wo,
+            ..
+        } => {
             for k in 0..3 {
-                fill(wx[k], *h, N_IN);
+                fill(wx[k], *h, *n_in);
                 fill(wh[k], *h, *h);
             }
             fill(*wo, N_OUT, *h);
@@ -208,7 +219,33 @@ pub fn init_params(arch: Arch, rng: &mut Rng) -> Vec<f32> {
 /// The copy computes the same outputs: its gates and outputs ignore the
 /// clocks and the direct path until training connects them. The clock
 /// writers get random weights, so the clocks already tick.
+///
+/// A GRU-32 copied into `Arch::GruMem` also computes the same outputs: the
+/// weights on the battle-memory inputs start at zero.
 pub fn transplant(from: Arch, p: &[f32], to: Arch, rng: &mut Rng) -> Option<Vec<f32>> {
+    if from == Arch::Gru && to == Arch::GruMem && p.len() == from.param_count() {
+        let (
+            Layout::Gru { h, wx, wh, .. },
+            Layout::Gru {
+                n_in,
+                wx: wx2,
+                wh: wh2,
+                ..
+            },
+        ) = (Layout::new(from).0, Layout::new(to).0)
+        else {
+            return None;
+        };
+        let mut q = vec![0.0; to.param_count()];
+        for g in 0..3 {
+            for r in 0..h {
+                q[wx2[g] + r * n_in..][..N_IN].copy_from_slice(&p[wx[g] + r * N_IN..][..N_IN]);
+            }
+        }
+        // Everything after the input weights has the same layout.
+        q[wh2[0]..].copy_from_slice(&p[wh[0]..]);
+        return Some(q);
+    }
     if !matches!(from, Arch::Gru | Arch::GruL) || to != Arch::GruClock {
         return None;
     }
@@ -220,6 +257,7 @@ pub fn transplant(from: Arch, p: &[f32], to: Arch, rng: &mut Rng) -> Option<Vec<
             b,
             wo,
             bo,
+            ..
         },
         Layout::GruClock {
             h: h2,
@@ -366,15 +404,25 @@ impl FixedNet {
             }
             Layout::Gru {
                 h,
+                n_in,
                 wx,
                 wh,
                 b,
                 wo,
                 bo,
             } => {
-                let h = *h;
-                let [z, r, n, rh, ..] = &mut self.buf[..] else {
+                let (h, n_in) = (*h, *n_in);
+                let [z, r, n, rh, u, ..] = &mut self.buf[..] else {
                     unreachable!()
+                };
+                // Inputs it does not get (the battle memory outside Robocode
+                // battles) stay at zero.
+                let x = if x.len() == n_in {
+                    x
+                } else {
+                    u.clear();
+                    u.extend(x.iter().copied().chain(std::iter::repeat(0.0)).take(n_in));
+                    &u[..]
                 };
                 z.clear();
                 z.extend_from_slice(&p[b[0]..b[0] + h]);
@@ -382,15 +430,15 @@ impl FixedNet {
                 r.extend_from_slice(&p[b[1]..b[1] + h]);
                 n.clear();
                 n.extend_from_slice(&p[b[2]..b[2] + h]);
-                matvec_add(&p[wx[0]..wx[0] + h * N_IN], x, z);
+                matvec_add(&p[wx[0]..wx[0] + h * n_in], x, z);
                 matvec_add(&p[wh[0]..wh[0] + h * h], &self.h, z);
-                matvec_add(&p[wx[1]..wx[1] + h * N_IN], x, r);
+                matvec_add(&p[wx[1]..wx[1] + h * n_in], x, r);
                 matvec_add(&p[wh[1]..wh[1] + h * h], &self.h, r);
                 z.iter_mut().for_each(|v| *v = sigmoid(*v));
                 r.iter_mut().for_each(|v| *v = sigmoid(*v));
                 rh.clear();
                 rh.extend(r.iter().zip(&self.h).map(|(a, b)| a * b));
-                matvec_add(&p[wx[2]..wx[2] + h * N_IN], x, n);
+                matvec_add(&p[wx[2]..wx[2] + h * n_in], x, n);
                 matvec_add(&p[wh[2]..wh[2] + h * h], rh, n);
                 for j in 0..h {
                     let nv = n[j].tanh();

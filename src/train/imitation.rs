@@ -206,6 +206,7 @@ pub fn pretrain_cached(
         fitness: 0.0,
         vs_scripted: 0.0,
         rules: crate::sim::Rules::Tanks,
+        keep_state: false,
         genes: crate::nn::Genes::Fixed(p.clone()),
     };
     let _ = m.save(&path);

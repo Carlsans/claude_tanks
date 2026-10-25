@@ -258,6 +258,7 @@ pub fn seq_forward(
             b,
             wo,
             bo,
+            ..
         } => {
             let h = *h;
             let gt = Gates { h, wx, wh, b };
@@ -379,6 +380,7 @@ pub fn seq_backward(
                 b,
                 wo,
                 bo,
+                ..
             },
             SeqCache::Gru(c),
         ) => {

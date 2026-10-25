@@ -1,14 +1,17 @@
 //! Our pilots (networks and scripted bots) inside a Tank Royale battle. They
 //! see only what a Tank Royale bot sees (its own state, its own bullets and
 //! its events) and get it as our usual 34 observations, with a few slots
-//! taking the nearest Royale meaning (see `observe`).
+//! taking the nearest Royale meaning (see `observe`). Networks that read the
+//! battle memory get its inputs after those 34.
 
 use super::battle::{Bot, BulletState, Event, Intent};
+use super::memory::{BattleMemory, N_MEM, Sighting};
 use super::*;
 use crate::bots::ScriptedBot;
-use crate::nn::Brain;
+use crate::nn::{Brain, ModelFile};
 use crate::sim::sensors::N_OBS;
 use crate::sim::world::Controller;
+use std::sync::{Arc, Mutex};
 
 /// What a bot receives with one tick.
 pub struct View<'a> {
@@ -31,10 +34,38 @@ pub enum Driver {
     Scripted(ScriptedBot),
 }
 
+/// What a pilot did over a battle, for surveys.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PilotReport {
+    pub rounds: u32,
+    pub won: u32,
+    /// Our bullets that hit the enemy or a wall, and those that hit it.
+    pub resolved: u32,
+    pub hits: u32,
+    /// Enemy shots seen (energy drops) and its bullets that hit us.
+    pub enemy_shots: u32,
+    pub hit_by: u32,
+    /// Distance to the enemy summed over the turns it was in sight, and the
+    /// turns closer than `CLOSE`.
+    pub distance: f64,
+    pub seen_turns: u32,
+    pub close_turns: u32,
+}
+
+/// Distance (pixels) under which a turn counts as close combat.
+pub const CLOSE: f64 = 150.0;
+
 /// Turns our pilots' observations and outputs into Tank Royale terms.
 pub struct Adapter {
     pub driver: Driver,
+    /// The network's state carries over from one round of a battle to the
+    /// next, instead of starting afresh.
+    pub keep_state: bool,
+    memory: BattleMemory,
+    report: Option<Arc<Mutex<PilotReport>>>,
     last_seen: Option<(f64, f64)>,
+    /// The enemy's heading and speed at the last scan.
+    last_motion: (f64, f64),
     since_seen: u32,
     enemy_energy: Option<f64>,
     /// Turns since the enemy's energy dropped as if it fired, and the drop.
@@ -51,15 +82,51 @@ impl Adapter {
     pub fn new(driver: Driver) -> Adapter {
         Adapter {
             driver,
+            keep_state: false,
+            memory: BattleMemory::default(),
+            report: None,
             last_seen: None,
+            last_motion: (0.0, 0.0),
             since_seen: u32::MAX / 2,
             enemy_energy: None,
             fired: None,
         }
     }
 
-    fn outputs(&mut self, o: &[f32; N_OBS]) -> [f32; 5] {
+    /// A network as its model file says it plays.
+    pub fn for_model(m: &ModelFile) -> Adapter {
+        Adapter {
+            keep_state: m.keep_state,
+            ..Adapter::new(Driver::Net(m.brain()))
+        }
+    }
+
+    /// Shares what the pilot does over the battle through `report`.
+    pub fn with_report(mut self, report: Arc<Mutex<PilotReport>>) -> Adapter {
+        self.report = Some(report);
+        self
+    }
+
+    /// Where the enemy was last seen, if ever this round.
+    fn sighting(&self) -> Option<Sighting> {
+        self.last_seen.map(|(x, y)| Sighting {
+            x,
+            y,
+            direction: self.last_motion.0,
+            speed: self.last_motion.1,
+            age: self.since_seen,
+        })
+    }
+
+    fn outputs(&mut self, o: &[f32; N_OBS], v: &View) -> [f32; 5] {
+        let seen = self.sighting();
         match &mut self.driver {
+            Driver::Net(b) if b.memory_inputs() > 0 => {
+                let mut x = [0.0f32; N_OBS + N_MEM];
+                x[..N_OBS].copy_from_slice(o);
+                x[N_OBS..].copy_from_slice(&self.memory.inputs(v, seen));
+                b.outputs(&x)
+            }
             Driver::Net(b) => b.outputs(o),
             Driver::Scripted(s) => {
                 let a = s.act(o);
@@ -147,6 +214,7 @@ impl Adapter {
             }
             self.enemy_energy = Some(energy);
             self.last_seen = Some((x, y));
+            self.last_motion = (dir, speed);
             self.since_seen = 0;
         }
         o[7] = self
@@ -181,9 +249,11 @@ impl Adapter {
 impl Pilot for Adapter {
     fn reset(&mut self) {
         match &mut self.driver {
+            Driver::Net(_) if self.keep_state => {}
             Driver::Net(b) => b.reset(),
             Driver::Scripted(s) => s.reset(),
         }
+        self.memory.new_round();
         self.last_seen = None;
         self.since_seen = u32::MAX / 2;
         self.enemy_energy = None;
@@ -192,7 +262,26 @@ impl Pilot for Adapter {
 
     fn act(&mut self, v: &View) -> Intent {
         let o = self.observe(v);
-        let out = self.outputs(&o);
+        let fired = match self.fired {
+            Some((0, power)) => Some(power),
+            _ => None,
+        };
+        let seen = self.sighting();
+        self.memory.update(v, seen, fired);
+        if let Some(r) = &self.report {
+            let m = &self.memory;
+            let mut r = r.lock().unwrap();
+            (r.rounds, r.won) = (m.rounds, m.won);
+            (r.resolved, r.hits) = (m.resolved, m.hits);
+            (r.enemy_shots, r.hit_by) = (m.enemy_shots, m.hit_by);
+            if let Some(e) = seen.filter(|e| e.age == 0) {
+                let d = (e.x - v.me.x).hypot(e.y - v.me.y);
+                r.distance += d;
+                r.seen_turns += 1;
+                r.close_turns += u32::from(d < CLOSE);
+            }
+        }
+        let out = self.outputs(&o, v);
         let c = |x: f32| x.clamp(-1.0, 1.0) as f64;
         Intent {
             target_speed: MAX_SPEED * c(out[0]),

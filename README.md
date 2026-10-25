@@ -52,6 +52,7 @@ Throttle, hull turn, turret turn, radar turn, fire (fires when the output is abo
 | GRU-L | 64 gated recurrent units | 19 333 |
 | GRU + clocks | GRU-32 whose gates also read 16 clocks, and a direct path from inputs to outputs. A clock is a leaky unit with a fixed time constant (0.1 s to 30 s, spread on a log scale) that the network writes into, so it can time holds and jinks the way the bots do. A trained GRU-32 can be copied into it unchanged (`init_model`) | 9 455 |
 | NEAT | evolving topology, recurrent links allowed | grows |
+| GRU + battle memory | GRU-32 that also reads 10 battle-memory inputs under Robocode rules (see below; zeros in our own game). A trained GRU-32 can be copied into it unchanged | 7 557 |
 
 ## Training methods
 
@@ -142,7 +143,10 @@ The app also plays by the rules of [Robocode Tank Royale](https://robocode.dev),
 - `royale_eval <model>` scores a model against each port and against the day champion. To meet the real bots, use the Robocode tab or `royale`.
 - `royale_tournament <duels> <out> A=a.json B=b.json ...` plays a round-robin under Robocode rules between networks and the five ports, with Elo.
 - **Real bots in training:** `robots=[<bot dirs>]` (or *Real bots* in the Train tab) makes every candidate also battle real bots each generation: `robot_battles` battles of `robot_rounds` rounds, each round weighing as much as one duel. Both members of an ES pair meet the same bot on the same placements. The bots stay running between battles (`robot_slots` processes each, every process behind a server of its own), so they keep what they learn about our networks, as in a long Robocode battle. With `robot_active=N` only N bots run at once and the run moves to the next group every `robot_rotate` generations.
-- `royale_survey <bots folder> <model>` plays every bot of a folder against a network (10 rounds by default, several bots at once) and records the result, damage and speed of each in `results/robocode/survey.jsonl`. `royale_pool` measures how many training rounds per second the bots allow.
+- **Memory between rounds:** Robocode battles last several rounds (35 in the RoboRumble), and strong robots keep statistics on their opponent from one round to the next. Our networks normally start every round afresh. Two ways to remember:
+  - `keep_state=true`: the network's state carries over from one round of a battle to the next. It is saved with the model (`keep_state` in the model file).
+  - The *GRU + battle memory* architecture (`gru_mem`) reads 10 more inputs, kept over the whole battle (`src/royale/memory.rs`): the rounds won so far, our hit rate, the enemy's hit rate on us, the damage balance, how much shooting that rests on, where the enemy tends to be when our bullets reach it (a guess-factor aim, as Robocode targeting does), where the enemy's bullets that hit us were aimed, and how much the enemy moves. Nothing tells it what to do with them: whether to close in on a weak or evasive opponent is left to training.
+- `royale_survey <bots folder> <model>` plays every bot of a folder against a network (10 rounds by default, several bots at once) and records the result, damage and speed of each in `results/robocode/survey.jsonl`, with the result of each round, our hit rate, the enemy's, and how close the network fought. `royale_pool` measures how many training rounds per second the bots allow.
 - First results ([`results/robocode/`](results/robocode/README.md)): two hours of fine-tuning took the day champion from 65% to 99% of duels won against the ports, and to 88–96% of rounds against the real Java sample bots, five of which it never met in training. The Robocode champion is [`models/champions/gru_es_robocode.json`](models/champions/gru_es_robocode.json). Longer self-play made networks that beat their relatives but not other styles, so the next runs add a league of other networks.
 
 ```sh

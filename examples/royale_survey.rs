@@ -3,17 +3,19 @@
 //! Each bot gets its own server, so several battles run at once. Appends one
 //! JSON line per bot to `out.jsonl` (default `results/robocode/survey.jsonl`):
 //! whether it connected, then from the bot's side the rounds `won` and `lost`
-//! and the damage dealt and taken, and its speed. Bots already in the file
-//! are skipped, so an interrupted survey resumes.
+//! and the damage dealt and taken, and its speed; then `round_seq`, the bot's
+//! result round by round (W, L or D), and what our network did: its shots and
+//! hits, the enemy's shots seen and hits, and how close it fought. Bots already
+//! in the file are skipped, so an interrupted survey resumes.
 use claude_tanks::nn::ModelFile;
 use claude_tanks::royale::Setup;
-use claude_tanks::royale::pilot::{Adapter, Driver};
+use claude_tanks::royale::pilot::{Adapter, PilotReport};
 use claude_tanks::royale::server::{
     BattleOptions, BotDir, Entrant, Live, Server, run_battle, sandbox_name,
 };
 use std::io::Write;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A battle that takes longer than this is stopped and recorded as such.
@@ -39,7 +41,10 @@ fn survey(bot: &BotDir, model: &ModelFile, rounds: u32) -> serde_json::Value {
         return fail(rec, "did not connect");
     };
     rec["connect_s"] = started.elapsed().as_secs_f32().into();
-    let me = Entrant::Local(Box::new(Adapter::new(Driver::Net(model.brain()))));
+    let report = Arc::new(Mutex::new(PilotReport::default()));
+    let me = Entrant::Local(Box::new(
+        Adapter::for_model(model).with_report(report.clone()),
+    ));
     let opts = BattleOptions {
         setup: Setup {
             rounds,
@@ -103,6 +108,31 @@ fn survey(bot: &BotDir, model: &ModelFile, rounds: u32) -> serde_json::Value {
             rec["turns"] = turns.into();
             if turns > 0 {
                 rec["ms_per_turn"] = (secs * 1000.0 / turns as f32).into();
+            }
+            let seq: String = l
+                .log
+                .iter()
+                .filter_map(|s| {
+                    let won_by = s.strip_prefix("Round ")?.split(" won by ").nth(1)?;
+                    let won_by = won_by.rsplit_once(" in ")?.0;
+                    Some(if won_by == bot.name {
+                        'W'
+                    } else if won_by == model.name {
+                        'L'
+                    } else {
+                        'D'
+                    })
+                })
+                .collect();
+            rec["round_seq"] = seq.into();
+            let r = *report.lock().unwrap();
+            rec["our_resolved"] = r.resolved.into();
+            rec["our_hits"] = r.hits.into();
+            rec["enemy_shots"] = r.enemy_shots.into();
+            rec["hit_by"] = r.hit_by.into();
+            if r.seen_turns > 0 {
+                rec["mean_distance"] = (r.distance / r.seen_turns as f64).into();
+                rec["close_share"] = (r.close_turns as f64 / r.seen_turns as f64).into();
             }
             rec
         }
