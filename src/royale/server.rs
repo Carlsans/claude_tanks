@@ -242,7 +242,8 @@ pub struct Live {
     pub results: Vec<Score>,
     pub log: Vec<String>,
     pub finished: bool,
-    /// Turns that went ahead without every living bot's intent.
+    /// Turns played, and those that went ahead without every living bot's intent.
+    pub turns: u64,
     pub timeouts: u64,
 }
 
@@ -420,6 +421,7 @@ pub fn run_battle(
             let mut l = live.lock().unwrap();
             l.results = battle.results.clone();
             l.turn = Some(turn.clone());
+            l.turns += 1;
         }
         if turn.game_ended {
             let ranks = ranks(&battle.results);

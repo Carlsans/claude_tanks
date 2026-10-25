@@ -11,7 +11,7 @@ pub mod ppo;
 use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, Brain, Genes, ModelFile, models_dir};
 use crate::rng::Rng;
-use crate::royale::pool::{BOT_MEMORY_MB, RobotPool, available_memory_mb};
+use crate::royale::pool::{BOT_MEMORY_MB, BotStats, RobotPool, available_memory_mb};
 use crate::royale::server::{BotDir, sandbox_name};
 use crate::royale::sparring::Sparring;
 use crate::sim::Rules;
@@ -551,6 +551,27 @@ fn start_robots(cfg: &TrainConfig, dirs: &[String], tx: &Sender<Msg>) -> Option<
     }
 }
 
+/// The three robots of a group that took longest per round.
+fn slowest_robots(p: &RobotPool) -> String {
+    let mut v: Vec<(String, BotStats)> = (0..p.bots().len())
+        .map(|b| (p.bots()[b].name.clone(), p.stats(b)))
+        .collect();
+    let per_round = |s: &BotStats| s.seconds / s.rounds.max(1) as f64;
+    v.sort_by(|a, b| per_round(&b.1).total_cmp(&per_round(&a.1)));
+    let list: Vec<String> = v
+        .iter()
+        .take(3)
+        .map(|(n, s)| {
+            format!(
+                "{n} {:.1} s/round ({:.1}% of turns skipped)",
+                per_round(s),
+                100.0 * s.skipped_share()
+            )
+        })
+        .collect();
+    format!("Robots: slowest of the group: {}", list.join(", "))
+}
+
 /// Load the league models; unreadable files are reported and skipped.
 fn load_league(cfg: &TrainConfig, tx: &Sender<Msg>) -> Vec<Opponent> {
     cfg.league
@@ -813,6 +834,8 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let _ = tx.send(Msg::Log(format!("League: {} models", league.len())));
     }
     let (mut robots, mut robot_group) = (None, None);
+    // Robots of the running group already reported as given up.
+    let mut given_up = Vec::new();
     let mut paused = false;
     loop {
         // Commands.
@@ -868,9 +891,12 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let group = robot_group_at(&cfg, st.generation);
         if robot_group != Some(group) {
             // Stop the old group before starting the next.
-            drop(robots.take());
+            if let Some(p) = robots.take() {
+                let _ = tx.send(Msg::Log(slowest_robots(&p)));
+            }
             robots = start_robots(&cfg, &robot_group_dirs(&cfg, group), tx);
             robot_group = Some(group);
+            given_up = vec![false; robots.as_ref().map_or(0, |p| p.bots().len())];
         }
         let use_gpu = device.pick();
         let t_step = Instant::now();
@@ -900,6 +926,21 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             robots: robots.as_ref(),
             robot_plan,
         });
+        if let Some(p) = &robots {
+            for (b, reported) in given_up.iter_mut().enumerate() {
+                let s = p.stats(b);
+                if s.given_up && !*reported {
+                    *reported = true;
+                    let _ = tx.send(Msg::Log(format!(
+                        "Robots: gave up on {} ({} of {} battles failed, {:.0}% of turns skipped)",
+                        p.bots()[b].name,
+                        s.failed,
+                        s.battles,
+                        100.0 * s.skipped_share()
+                    )));
+                }
+            }
+        }
         if let Some(l) = device.record(use_gpu, t_step.elapsed().as_secs_f64(), rep.ticks) {
             let _ = tx.send(Msg::Log(format!("Gen {}: {l}", st.generation)));
         }

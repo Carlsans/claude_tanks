@@ -56,10 +56,20 @@ fn main() {
     });
     let secs = t.elapsed().as_secs_f32();
     let mut played = 0;
-    for (b, (won, lost, r, failed)) in pool.bots().iter().zip(results.into_inner().unwrap()) {
+    for (k, (b, (won, lost, r, failed))) in pool
+        .bots()
+        .iter()
+        .zip(results.into_inner().unwrap())
+        .enumerate()
+    {
+        let s = pool.stats(k);
         println!(
-            "{:30} won {won:4} lost {lost:4} of {r:4} rounds, {failed} failed battles",
-            b.name
+            "{:30} won {won:4} lost {lost:4} of {r:4} rounds, {failed} failed battles, {:.1} s/round, {:.1} ms/turn, {:.1}% of turns skipped{}",
+            b.name,
+            s.seconds / s.rounds.max(1) as f64,
+            s.seconds * 1000.0 / s.turns.max(1) as f64,
+            100.0 * s.skipped_share(),
+            if s.given_up { ", given up" } else { "" }
         );
         played += r;
     }

@@ -10,12 +10,22 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// Time a bot gets to connect after it is started.
-const CONNECT: Duration = Duration::from_secs(45);
+/// Time a bot gets to connect after it is started (all RoboRumble robots
+/// that run connect within 6 s).
+const CONNECT: Duration = Duration::from_secs(20);
 /// Battles running longer than this are stopped and count as failed.
 const BATTLE_LIMIT: Duration = Duration::from_secs(300);
 /// A bot that fails this many battles in a row is given up.
 const MAX_FAILURES: u32 = 3;
+/// A bot is given up when, over a battle, it answers too late on more than
+/// this share of the turns (each waits the whole turn timeout)...
+const MAX_SKIPPED: f64 = 0.1;
+/// ...or the turns take longer than this on average (ms). Robots answering
+/// just under the timeout never skip a turn, but slow every battle 10-fold.
+/// Turns take 1-1.5 ms with strong robots (DrussGT, Diamond) when few run;
+/// in the RoboRumble survey, 16 at once, 2.4 ms (median) and at most 5.7 ms
+/// for the robots training uses.
+const MAX_MS_PER_TURN: f64 = 8.0;
 /// Memory one bot process may take: the heap `BotDir::launch` allows a JVM,
 /// plus the JVM itself.
 pub const BOT_MEMORY_MB: u64 = 400;
@@ -36,6 +46,27 @@ pub struct BattleResult {
     /// Bullet damage we dealt and took.
     pub dealt: f64,
     pub taken: f64,
+}
+
+/// What a bot's battles cost since the pool started.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BotStats {
+    pub battles: u32,
+    pub failed: u32,
+    pub rounds: u32,
+    /// Time in battles, not counting starts.
+    pub seconds: f64,
+    pub turns: u64,
+    /// Turns that went ahead without the bot's intent.
+    pub skipped: u64,
+    /// Given up: too many failed battles in a row, or too slow.
+    pub given_up: bool,
+}
+
+impl BotStats {
+    pub fn skipped_share(&self) -> f64 {
+        self.skipped as f64 / self.turns.max(1) as f64
+    }
 }
 
 struct Slot {
@@ -81,6 +112,7 @@ pub struct RobotPool {
     busy: Mutex<Vec<bool>>,
     freed: Condvar,
     failures: Vec<AtomicU32>,
+    stats: Vec<Mutex<BotStats>>,
 }
 
 impl RobotPool {
@@ -101,6 +133,7 @@ impl RobotPool {
         }
         Ok(RobotPool {
             failures: bots.iter().map(|_| AtomicU32::new(0)).collect(),
+            stats: bots.iter().map(|_| Mutex::default()).collect(),
             busy: Mutex::new(vec![false; slots.len()]),
             bots,
             per_bot,
@@ -118,14 +151,19 @@ impl RobotPool {
         self.slots.len()
     }
 
-    /// False once bot `bot` failed too many battles in a row.
+    /// False once bot `bot` is given up.
     pub fn alive(&self, bot: usize) -> bool {
         self.failures[bot].load(Ordering::Relaxed) < MAX_FAILURES
     }
 
+    pub fn stats(&self, bot: usize) -> BotStats {
+        *self.stats[bot].lock().unwrap()
+    }
+
     /// A battle of `rounds` rounds between `pilot` and bot `bot`, on the next
     /// free process of that bot. `None` if the bot failed; it is restarted
-    /// for its next battle.
+    /// for its next battle. Bots that fail too often or answer too slowly
+    /// are given up.
     pub fn battle(
         &self,
         bot: usize,
@@ -147,15 +185,28 @@ impl RobotPool {
                 busy = self.freed.wait(busy).unwrap();
             }
         };
-        let res = self.play(k, bot, pilot, rounds, seed);
+        let live = Mutex::new(Live::default());
+        let (res, seconds) = self.play(k, bot, pilot, rounds, seed, &live);
         self.busy.lock().unwrap()[k] = false;
         self.freed.notify_all();
+        let l = live.into_inner().unwrap();
+        let too_slow = l.timeouts as f64 > MAX_SKIPPED * l.turns as f64
+            || seconds * 1000.0 > MAX_MS_PER_TURN * l.turns as f64;
         match res {
+            Some(_) if too_slow => self.failures[bot].store(MAX_FAILURES, Ordering::Relaxed),
             Some(_) => self.failures[bot].store(0, Ordering::Relaxed),
             None => {
                 self.failures[bot].fetch_add(1, Ordering::Relaxed);
             }
         }
+        let mut s = self.stats[bot].lock().unwrap();
+        s.battles += 1;
+        s.failed += u32::from(res.is_none());
+        s.rounds += res.map_or(0, |r| r.rounds);
+        s.seconds += seconds;
+        s.turns += l.turns;
+        s.skipped += l.timeouts;
+        s.given_up = !self.alive(bot);
         res
     }
 
@@ -166,10 +217,13 @@ impl RobotPool {
         pilot: Box<dyn Pilot>,
         rounds: u32,
         seed: u64,
-    ) -> Option<BattleResult> {
+        live: &Mutex<Live>,
+    ) -> (Option<BattleResult>, f64) {
         let mut slot = self.slots[k].lock().unwrap();
         let b = &self.bots[bot];
-        let conn = slot.connect(b)?;
+        let Some(conn) = slot.connect(b) else {
+            return (None, 0.0);
+        };
         let opts = BattleOptions {
             setup: Setup {
                 rounds,
@@ -178,11 +232,7 @@ impl RobotPool {
             tps: None,
             seed,
         };
-        let (live, stop, done) = (
-            Mutex::new(Live::default()),
-            AtomicBool::new(false),
-            AtomicBool::new(false),
-        );
+        let (stop, done) = (AtomicBool::new(false), AtomicBool::new(false));
         let t = Instant::now();
         let res = std::thread::scope(|s| {
             s.spawn(|| {
@@ -196,23 +246,27 @@ impl RobotPool {
                 vec![Entrant::Local(pilot), Entrant::Remote(conn)],
                 vec!["Candidate".into(), b.name.clone()],
                 &opts,
-                &live,
+                live,
                 &stop,
             );
             done.store(true, Ordering::Relaxed);
             r
         });
+        let seconds = t.elapsed().as_secs_f64();
         match res {
-            Ok(s) => Some(BattleResult {
-                rounds,
-                won: s[0].first_places,
-                lost: s[1].first_places,
-                dealt: s[0].bullet_damage,
-                taken: s[1].bullet_damage,
-            }),
+            Ok(s) => (
+                Some(BattleResult {
+                    rounds,
+                    won: s[0].first_places,
+                    lost: s[1].first_places,
+                    dealt: s[0].bullet_damage,
+                    taken: s[1].bullet_damage,
+                }),
+                seconds,
+            ),
             Err(_) => {
                 slot.kill();
-                None
+                (None, seconds)
             }
         }
     }
