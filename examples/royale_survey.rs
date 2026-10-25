@@ -7,6 +7,11 @@
 //! result round by round (W, L or D), and what our network did: its shots and
 //! hits, the enemy's shots seen and hits, and how close it fought. Bots already
 //! in the file are skipped, so an interrupted survey resumes.
+//!
+//! Some robots save what they learned about an opponent in files named after
+//! it, and read them in later battles. So that every survey meets robots that
+//! know nothing of our network, it plays under a name of its own: the model's
+//! name and a random suffix (recorded as `as`).
 use claude_tanks::nn::ModelFile;
 use claude_tanks::royale::Setup;
 use claude_tanks::royale::pilot::{Adapter, PilotReport};
@@ -21,9 +26,9 @@ use std::time::{Duration, Instant};
 /// A battle that takes longer than this is stopped and recorded as such.
 const BATTLE_LIMIT: Duration = Duration::from_secs(240);
 
-fn survey(bot: &BotDir, model: &ModelFile, rounds: u32) -> serde_json::Value {
+fn survey(bot: &BotDir, model: &ModelFile, name: &str, rounds: u32) -> serde_json::Value {
     let dir = bot.dir.file_name().unwrap().to_string_lossy().to_string();
-    let mut rec = serde_json::json!({"dir": dir, "name": bot.name});
+    let mut rec = serde_json::json!({"dir": dir, "name": bot.name, "as": name});
     let fail = |mut rec: serde_json::Value, why: &str| {
         rec["status"] = why.into();
         rec
@@ -69,7 +74,7 @@ fn survey(bot: &BotDir, model: &ModelFile, rounds: u32) -> serde_json::Value {
         let r = run_battle(
             &server,
             vec![me, Entrant::Remote(conn)],
-            vec![model.name.clone(), bot.name.clone()],
+            vec![name.to_string(), bot.name.clone()],
             &opts,
             &live,
             &stop,
@@ -117,7 +122,7 @@ fn survey(bot: &BotDir, model: &ModelFile, rounds: u32) -> serde_json::Value {
                     let won_by = won_by.rsplit_once(" in ")?.0;
                     Some(if won_by == bot.name {
                         'W'
-                    } else if won_by == model.name {
+                    } else if won_by == name {
                         'L'
                     } else {
                         'D'
@@ -167,6 +172,10 @@ fn main() {
         done.len(),
         sandbox_name().unwrap_or("none")
     );
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let me = format!("{}-{:06x}", model.name, nanos & 0xff_ffff);
     let queue = Mutex::new(todo.into_iter());
     let file = Mutex::new(
         std::fs::OpenOptions::new()
@@ -182,7 +191,7 @@ fn main() {
                     let Some(bot) = queue.lock().unwrap().next() else {
                         break;
                     };
-                    let rec = survey(&bot, &model, rounds);
+                    let rec = survey(&bot, &model, &me, rounds);
                     eprintln!(
                         "{:40} {:16} {}-{}",
                         rec["dir"].as_str().unwrap_or(""),
