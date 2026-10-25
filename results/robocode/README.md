@@ -23,6 +23,7 @@
 | M1 | A network that keeps its state from one round to the next can learn the opponent over a battle | As M0 with `keep_state=true` | same, in parallel |
 | M2 | Battle statistics as inputs (rounds won, both hit rates, damage balance, guess factors; `gru_mem`) let training find when to close in on a weak or evasive opponent | As M0 with the `gru_mem` architecture (RC4b latest copied in, new inputs starting at zero weight) | same, in parallel |
 | M3 | Both together | `gru_mem` with `keep_state=true` | same, in parallel |
+| M0b, M2b, M3b | After 300 generations the memory weights were still small (see below): more training lets M2 and M3 use them | M0, M2 and M3 continued from their latest networks, with a new robot order (`seed=1`). M1 dropped | 600 more generations, 3 runs in parallel |
 
 ## Results
 
@@ -49,6 +50,18 @@
 | RC4b best | 97.1 | 98.3 | 98.7 | 100.0 | 97.1 | 98.2 | 78.9 |
 | RC4b latest | 87.5 | 97.4 | 97.5 | 100.0 | 93.9 | 95.3 | 65.6 |
 | RC4b ema | 92.2 | 98.2 | 99.6 | 99.9 | 93.1 | 96.6 | 69.8 |
+| M0 best | 95.1 | 97.4 | 99.4 | 100.0 | 96.4 | 97.7 | 80.0 |
+| M0 latest | 89.1 | 96.3 | 98.6 | 99.8 | 95.0 | 95.8 | 74.6 |
+| M0 ema | 93.2 | 97.1 | 98.3 | 100.0 | 95.9 | 96.9 | 76.6 |
+| M1 best | 96.4 | 97.4 | 99.2 | 100.0 | 95.8 | 97.8 | 77.7 |
+| M1 latest | 96.2 | 96.6 | 99.5 | 100.0 | 97.3 | 97.9 | 74.3 |
+| M1 ema | 90.6 | 97.6 | 98.5 | 99.8 | 94.1 | 96.1 | 73.3 |
+| M2 best | 91.9 | 96.4 | 97.7 | 100.0 | 95.6 | 96.3 | 70.9 |
+| M2 latest | 89.7 | 94.8 | 94.0 | 100.0 | 91.7 | 94.0 | 65.5 |
+| M2 ema | 91.6 | 96.0 | 97.5 | 100.0 | 94.2 | 95.9 | 68.5 |
+| M3 best | 95.5 | 95.7 | 98.7 | 100.0 | 98.0 | 97.6 | 73.6 |
+| M3 latest | 93.2 | 97.0 | 99.2 | 100.0 | 98.0 | 97.5 | 70.4 |
+| M3 ema | 95.4 | 96.6 | 98.0 | 100.0 | 97.5 | 97.5 | 73.8 |
 
 ### Round-robin (`royale_tournament`, 1000 duels per pairing)
 
@@ -113,17 +126,44 @@ These 10-round surveys all played under the run's name, and about 11 of the 120 
 
 ### Full battles: 35 rounds against the same 120 robots (rounds won of 4200)
 
-| Network | Rounds won | Rounds 1–5 | 26–35 | vs the champion, per robot (paired) |
-|---|---|---|---|---|
-| Champion (RC1 ema) | 1743 (41.5%) | 43.3% | 41.2% | – |
-| RC3a latest | 2035 (48.5%) | 51.7% | 48.3% | +7.0 ± 1.8 points |
-| RC4 latest | 2118 (50.4%) | 52.3% | 49.0% | +8.9 ± 1.9 |
-| RC4 latest, state kept between rounds (untrained) | 2055 (48.9%) | 51.2% | 47.9% | (−1.5 ± 0.7 against RC4 latest) |
-| RC4b best | 2037 (48.5%) | 50.7% | 48.5% | +7.0 ± 1.7 |
-| **RC4b latest** | **2162 (51.5%)** | 53.7% | 51.3% | **+10.0 ± 2.0** (+1.0 ± 0.9 against RC4 latest) |
-| RC4b ema | 2157 (51.4%) | 54.3% | 50.6% | +9.9 ± 1.8 (+0.9 ± 0.9 against RC4 latest) |
+*Score share* is our part of the Robocode score of each battle (survival, bullet damage, ram damage and bonuses), averaged over the robots, as the RoboRumble ranks robots.
+
+| Network | Rounds won | Rounds 1–5 | 26–35 | Score share | vs the champion, rounds per robot (paired) |
+|---|---|---|---|---|---|
+| Champion (RC1 ema) | 1743 (41.5%) | 43.3% | 41.2% | 43.7% | – |
+| RC3a latest | 2035 (48.5%) | 51.7% | 48.3% | 51.0% | +7.0 ± 1.8 points |
+| RC4 latest | 2118 (50.4%) | 52.3% | 49.0% | 52.4% | +8.9 ± 1.9 |
+| RC4 latest, state kept between rounds (untrained) | 2055 (48.9%) | 51.2% | 47.9% | 51.7% | (−1.5 ± 0.7 against RC4 latest) |
+| RC4b best | 2037 (48.5%) | 50.7% | 48.5% | 50.9% | +7.0 ± 1.7 |
+| **RC4b latest** | **2162 (51.5%)** | 53.7% | 51.3% | 53.4% | **+10.0 ± 2.0** (+1.0 ± 0.9 against RC4 latest) |
+| RC4b ema | 2157 (51.4%) | 54.3% | 50.6% | 52.9% | +9.9 ± 1.8 (+0.9 ± 0.9 against RC4 latest) |
 
 The ranking is the same as in the 10-round surveys. **The robots learn our networks a little over a battle:** every network wins fewer of rounds 26–35 than of rounds 1–10, by 1.2 to 2.8 points per robot (each within about one standard error, but all seven agree). Some robots clearly adapt (TimmiT, FloodSonnet, Hamilton, Saguaro, AFlatNatural, Jen, moonlightBat, ApolloKidd), while others do worse as the battle goes on (MorbidPriest, CannonfodderNano, Sunderer, NanoSatan). Our networks forget everything between rounds; M1–M3 test whether remembering helps.
+
+### Memory between rounds (M0–M3, 35-round battles against the same 120 robots)
+
+All four runs start from RC4b latest and differ only in the memory. Each network is compared with the M0 network of the same kind (latest with latest, and so on).
+
+| Network | Rounds won | Rounds 1–5 | 26–35 | Score share | vs M0, rounds per robot | vs M0, score share | Distance |
+|---|---|---|---|---|---|---|---|
+| M0 best | 2172 (51.7%) | 51.5% | 50.8% | 53.2% | – | – | 260 |
+| M0 latest | 2140 (51.0%) | 52.2% | 50.5% | 53.4% | – | – | 275 |
+| **M0 ema** | **2201 (52.4%)** | 52.7% | 52.0% | 53.9% | – | – | 275 |
+| M1 best | 1989 (47.4%) | 50.2% | 46.7% | 50.6% | **−4.4 ± 1.0** | **−2.6 ± 0.7** | 264 |
+| M1 latest | 1999 (47.6%) | 50.8% | 47.5% | 50.4% | **−3.4 ± 1.1** | **−2.9 ± 0.8** | 258 |
+| M1 ema | 2065 (49.2%) | 50.0% | 48.1% | 51.7% | **−3.2 ± 0.9** | **−2.2 ± 0.6** | 288 |
+| M2 best | 2156 (51.3%) | 52.2% | 51.1% | 53.0% | −0.4 ± 1.1 | −0.2 ± 0.7 | 297 |
+| M2 latest | 2174 (51.8%) | 54.2% | 51.7% | 53.5% | +0.8 ± 1.3 | +0.2 ± 0.8 | 304 |
+| M2 ema | 2167 (51.6%) | 53.7% | 52.6% | 53.6% | −0.8 ± 0.9 | −0.3 ± 0.6 | 306 |
+| **M3 best** | **2219 (52.8%)** | 57.7% | 51.2% | **54.5%** | +1.1 ± 0.9 | +1.2 ± 0.6 | 278 |
+| M3 latest | 2180 (51.9%) | 51.7% | 51.1% | 53.6% | +1.0 ± 1.0 | +0.2 ± 0.6 | 277 |
+| M3 ema | 2195 (52.3%) | 53.2% | 52.4% | 54.0% | −0.1 ± 1.0 | +0.1 ± 0.7 | 288 |
+
+**Do the memory networks close in on weak or evasive robots?** No. M2 fights about 30 units farther away than M0 against every kind of robot, and slightly farther still against the weakest shooters (rank correlation +0.31 for M2 latest), which is the opposite of charging. M3 fights at the same distance as M0 whatever the robot.
+
+**Would closing in pay?** Across all the networks above, a network that fights 100 units closer to the same robot gets about 6 points less of the score on average. That depends on the robot, though: against the third of robots that hit us least, closer goes with +1.5 points per 100 units; against the third that hit us most, with −8. The best distance depends on how well the opponent shoots, and that is what the memory inputs measure. This compares networks rather than one network at two distances, so it is a hint, not proof.
+
+**Why training did not find it:** after 300 generations, the weights of the ten memory inputs (which started at zero) are about 0.05 in size, the same as the random drift of every other input weight over those generations. The trained observation weights are about 0.57. No memory input stands out, so the networks barely use them yet. M0b, M2b and M3b give them 600 more generations.
 
 ## Verdicts
 
@@ -137,6 +177,10 @@ The ranking is the same as in the 10-round surveys. **The robots learn our netwo
 - **RC4: starved, inconclusive.** The run managed only 108 generations in 4 hours instead of about 1300. Generations took 10 s for the first 50, then slowed to as much as 1400 s: each robot is a JVM that may grow to a quarter of the memory by default, and 32 robots that keep learning pushed the machine deep into swap. RC4 latest still wins 51.2% of the held-out rounds, but +2.1 ± 1.6 points per robot over its start (RC3a latest) is within the noise. Bots now start with a 256 MB heap (8 strong robots over 240 rounds each: 2.1 GB instead of 3.9 GB, same speed), and training starts only as many robots as fit in the free memory.
 - **RC4b: modest, within the noise.** Without the swapping, RC4b ran 825 generations in 4 hours. Its latest network wins 51.5% of the rounds of full battles against the held-out robots, the best so far, but only +1.0 ± 0.9 points per robot over RC4 latest. RC4b latest is the starting point of M0–M3.
 - **Keeping the state between rounds needs training.** Simply letting RC4 latest carry its state over costs 1.5 ± 0.7 points: it was trained to start each round fresh.
-- **M0–M3** (running) compare memory between rounds against a control, 300 generations each, all four at once.
+- **M1 (state kept between rounds): refuted, worse.** All three M1 networks lose 3 to 4 points of rounds per robot against M0 (about 3 standard errors each) and 2 to 3 points of score share. 300 generations were not enough to unlearn starting each round fresh, or carrying the end of one round (often a dead enemy) into the next misleads the network.
+- **M2 (battle-memory inputs): no difference.** Within ±1 point of M0 on every network. It learned to keep farther away (304 instead of 275 units), which lowers both hit rates, but not to choose its distance by opponent.
+- **M3 (both): no clear difference.** M3 best has the most rounds won (52.8%) and score share (54.5%) of all networks, +1.2 ± 0.6 points of score share against M0 best. But among the nine comparisons with M0, one at two standard errors is what chance gives. M3 latest and ema are level with M0. Unlike M1, keeping the state does not hurt here.
+- **Charging did not emerge.** No memory network fights closer against weak or evasive robots, and the memory weights are still at noise level. M0b, M2b and M3b (running) train three times longer.
+- **No new champion yet.** M0 ema, M3 best and the other top networks win 51–53% of rounds against 41.5% for the Robocode champion, but none clearly beats the others. The choice waits for M0b–M3b.
 
 Every RC network is in [`models/robocode/`](../../models/robocode).
