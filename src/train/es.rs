@@ -1,7 +1,7 @@
 //! OpenAI-style evolution strategy: antithetic Gaussian perturbations of one mean
 //! parameter vector, centered-rank fitness shaping, Adam update.
 
-use super::eval::eval_members;
+use super::eval::{eval_members, robot_extra};
 use super::{StepEnv, StepReport, TrainConfig};
 use crate::nn::{Genes, fixed};
 use crate::rng::Rng;
@@ -97,7 +97,9 @@ impl Es {
             mean_fitness: mean,
             champion: Genes::Fixed(self.theta.clone()),
             ticks: out.ticks,
-            extra: vec![("param rms".into(), norm)],
+            extra: std::iter::once(("param rms".into(), norm))
+                .chain(robot_extra(out.robots))
+                .collect(),
         }
     }
 }

@@ -3,6 +3,7 @@
 
 use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL};
 use crate::nn::Arch;
+use crate::royale::server::{BotDir, sandbox_name};
 use crate::sim::Rules;
 use crate::train::{self, GenStats, Method, Msg, RunState, TrainConfig, TrainHandle, list_runs};
 use eframe::egui::{self, Color32, RichText};
@@ -20,8 +21,45 @@ pub struct TrainTab {
     x_steps: bool,
     /// Saved champions offered as league opponents.
     champions: Vec<PathBuf>,
+    /// Real bots offered as Robocode opponents, from `robots_dir`, with their
+    /// survey record against our champion (rounds won, lost) when there is one.
+    robots_dir: String,
+    robot_dirs: Option<Vec<SurveyedBot>>,
+    robot_filter: String,
     /// Set when the user asks to watch a model; taken by the app.
     pub watch_request: Option<PathBuf>,
+}
+
+/// A bot directory and its survey record against our champion (rounds won, lost).
+type SurveyedBot = (BotDir, Option<(u64, u64)>);
+
+/// Bot directories under `root`, with their record in `results/robocode/survey.jsonl`.
+fn list_robots(root: &str) -> Vec<SurveyedBot> {
+    let survey: std::collections::HashMap<String, (u64, u64)> =
+        std::fs::read_to_string("results/robocode/survey.jsonl")
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| {
+                Some((
+                    v["dir"].as_str()?.to_string(),
+                    (v["won"].as_u64()?, v["lost"].as_u64()?),
+                ))
+            })
+            .collect();
+    BotDir::scan(root.as_ref())
+        .into_iter()
+        .map(|b| {
+            let dir = b
+                .dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let rec = survey.get(&dir).copied();
+            (b, rec)
+        })
+        .collect()
 }
 
 /// `models/champions/*.json`, sorted by name.
@@ -51,6 +89,9 @@ impl Default for TrainTab {
             resume: None,
             x_steps: false,
             champions: list_champions(),
+            robots_dir: "bots".into(),
+            robot_dirs: None,
+            robot_filter: String::new(),
             watch_request: None,
         }
     }
@@ -372,6 +413,67 @@ impl TrainTab {
                 );
                 ui.add(egui::Slider::new(&mut c.eval_matches, 8..=200).text("eval matches"));
             });
+            if c.rules == Rules::Robocode {
+                ui.collapsing(format!("Real bots: {} selected", c.robots.len()), |ui| {
+                    ui.label(match sandbox_name() {
+                        Some(s) => format!("Bots run in their own processes, sandboxed with {s}."),
+                        None => "Bots run in their own processes with your permissions (no sandbox).".into(),
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Folder");
+                        ui.text_edit_singleline(&mut self.robots_dir);
+                        if ui.button("Rescan").clicked() {
+                            self.robot_dirs = None;
+                        }
+                    });
+                    let dirs = self
+                        .robot_dirs
+                        .get_or_insert_with(|| list_robots(&self.robots_dir));
+                    ui.horizontal(|ui| {
+                        ui.label("Filter");
+                        ui.text_edit_singleline(&mut self.robot_filter);
+                    });
+                    let f = self.robot_filter.to_lowercase();
+                    let shown: Vec<&SurveyedBot> = dirs
+                        .iter()
+                        .filter(|(b, _)| b.dir.to_string_lossy().to_lowercase().contains(&f))
+                        .collect();
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("Select the {} shown", shown.len())).clicked() {
+                            for (b, _) in &shown {
+                                let p = b.dir.display().to_string();
+                                if !c.robots.contains(&p) {
+                                    c.robots.push(p);
+                                }
+                            }
+                        }
+                        if ui.button("Clear").clicked() {
+                            c.robots.clear();
+                        }
+                    });
+                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                        for (b, rec) in &shown {
+                            let p = b.dir.display().to_string();
+                            let mut on = c.robots.contains(&p);
+                            let dir = b.dir.file_name().unwrap_or_default().to_string_lossy();
+                            let label = match rec {
+                                Some((w, l)) => format!("{dir}  (survey: {w}–{l} against the champion)"),
+                                None => dir.to_string(),
+                            };
+                            if ui.checkbox(&mut on, label).changed() {
+                                if on {
+                                    c.robots.push(p);
+                                } else {
+                                    c.robots.retain(|x| *x != p);
+                                }
+                            }
+                        }
+                    });
+                    ui.add(egui::Slider::new(&mut c.robot_battles, 1..=8).text("battles per candidate"));
+                    ui.add(egui::Slider::new(&mut c.robot_rounds, 1..=35).text("rounds per battle"));
+                    ui.add(egui::Slider::new(&mut c.robot_slots, 1..=8).text("processes per bot"));
+                });
+            }
             match c.method {
                 Method::Ga => {
                     ui.collapsing("GA parameters", |ui| {

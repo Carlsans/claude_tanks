@@ -8,6 +8,7 @@
 pub mod battle;
 pub mod duel;
 pub mod pilot;
+pub mod pool;
 pub mod protocol;
 pub mod server;
 pub mod sparring;

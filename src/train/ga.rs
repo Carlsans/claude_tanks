@@ -1,6 +1,6 @@
 //! Genetic algorithm over flat parameter vectors (fixed-topology networks).
 
-use super::eval::eval_members;
+use super::eval::{eval_members, robot_extra};
 use super::{StepEnv, StepReport, TrainConfig};
 use crate::nn::{Genes, fixed};
 use crate::rng::Rng;
@@ -105,7 +105,7 @@ impl Ga {
             mean_fitness: mean,
             champion: Genes::Fixed(champion),
             ticks: out.ticks,
-            extra: vec![],
+            extra: robot_extra(out.robots).collect(),
         }
     }
 }

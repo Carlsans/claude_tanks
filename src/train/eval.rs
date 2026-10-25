@@ -6,6 +6,7 @@ use crate::nn::{Arch, Brain, Genes};
 use crate::rng::Rng;
 use crate::royale::duel::{DuelResult, duel};
 use crate::royale::pilot::{Adapter, Driver, Pilot};
+use crate::royale::pool::RobotPool;
 use crate::royale::sparring::Sparring;
 use crate::sim::Rules;
 use crate::sim::world::{Controller, MatchResult, run_match};
@@ -13,7 +14,8 @@ use crate::sim::world::{Controller, MatchResult, run_match};
 use crate::sim::{ACTION_REPEAT, Action, World};
 use crate::sim::{MATCH_TIME, Terrain};
 use rayon::prelude::*;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// An opponent a candidate is evaluated against.
 #[derive(Clone)]
@@ -104,7 +106,11 @@ pub fn eval_population_royale(
         fitness[i] += f / k as f32;
         ticks += t;
     }
-    EvalOutcome { fitness, ticks }
+    EvalOutcome {
+        fitness,
+        ticks,
+        robots: None,
+    }
 }
 
 /// Fixed-topology members under the run's rules.
@@ -119,14 +125,99 @@ pub fn eval_members(env: &StepEnv, members: &[Vec<f32>]) -> EvalOutcome {
             &env.terrains,
             env.shaping,
         ),
-        Rules::Robocode => eval_population_royale(
-            &|i| net_pilot(cfg.arch, &members[i]),
-            members.len(),
-            &env.opponents,
-            cfg.seed ^ (env.generation as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
-            env.shaping,
-        ),
+        Rules::Robocode => {
+            let seed = cfg.seed ^ (env.generation as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut out = eval_population_royale(
+                &|i| net_pilot(cfg.arch, &members[i]),
+                members.len(),
+                &env.opponents,
+                seed,
+                env.shaping,
+            );
+            if let Some(pool) = env.robots
+                && !env.robot_plan.is_empty()
+            {
+                let b = cfg.robot_battles;
+                let jobs: Vec<(usize, usize, u64)> = (0..members.len())
+                    .flat_map(|i| {
+                        let first = (i / 2) * b;
+                        (first..first + b).map(move |k| (i, env.robot_plan[k], k as u64))
+                    })
+                    .collect();
+                let make = |i: usize| net_pilot(cfg.arch, &members[i]);
+                let (sums, record) =
+                    eval_robots(pool, &make, &jobs, cfg.robot_rounds, seed, env.shaping);
+                // Duels weigh 1 each, robot rounds 1 each.
+                let duels = env.opponents.len() as f32;
+                for (i, (sum, weight)) in sums.into_iter().enumerate() {
+                    out.fitness[i] = (out.fitness[i] * duels + sum) / (duels + weight).max(1.0);
+                }
+                out.robots = Some(record);
+            }
+            out
+        }
     }
+}
+
+/// The generation's record against real bots, for `StepReport::extra`.
+pub fn robot_extra(r: Option<Record>) -> impl Iterator<Item = (String, f32)> {
+    r.into_iter().flat_map(|r| {
+        [
+            ("robots won %".to_string(), r.win * 100.0),
+            ("robots lost %".to_string(), r.loss * 100.0),
+        ]
+    })
+}
+
+/// Plays battles `(member, robot, placement)` through the pool, one thread
+/// per bot process. Returns each member's summed round fitness and its weight
+/// (rounds played), and the record over every round.
+pub fn eval_robots(
+    pool: &RobotPool,
+    make: &(dyn Fn(usize) -> Box<dyn Pilot> + Sync),
+    jobs: &[(usize, usize, u64)],
+    rounds: u32,
+    seed: u64,
+    shaping: Shaping,
+) -> (Vec<(f32, f32)>, Record) {
+    let n = jobs.iter().map(|j| j.0 + 1).max().unwrap_or(0);
+    let sums = Mutex::new(vec![(0.0f32, 0.0f32); n]);
+    let record = Mutex::new((0u32, 0u32, 0u32));
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..pool.slots().min(jobs.len()) {
+            s.spawn(|| {
+                loop {
+                    let j = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(i, bot, place)) = jobs.get(j) else {
+                        break;
+                    };
+                    let Some(r) = pool.battle(bot, make(i), rounds, seed + place) else {
+                        continue;
+                    };
+                    // Per round as in `duel_fitness`.
+                    let n = r.rounds.max(1) as f64;
+                    let damage = ((r.dealt - r.taken) / (100.0 * n)).clamp(-1.0, 1.0) * n;
+                    let f = r.won as f32 - r.lost as f32 + shaping.weight * damage as f32;
+                    let mut s = sums.lock().unwrap();
+                    s[i].0 += f;
+                    s[i].1 += r.rounds as f32;
+                    let mut rec = record.lock().unwrap();
+                    rec.0 += r.won;
+                    rec.1 += r.lost;
+                    rec.2 += r.rounds;
+                }
+            });
+        }
+    });
+    let (won, lost, played) = record.into_inner().unwrap();
+    let p = played.max(1) as f32;
+    let rec = Record {
+        win: won as f32 / p,
+        loss: lost as f32 / p,
+        draw: (played.saturating_sub(won + lost)) as f32 / p,
+    };
+    (sums.into_inner().unwrap(), rec)
 }
 
 /// Win / draw / loss against a sparring bot under Robocode rules, on fixed placements.
@@ -206,6 +297,8 @@ pub fn terrains(rng: &mut Rng, n: usize, density: (f32, f32)) -> Vec<Terrain> {
 pub struct EvalOutcome {
     pub fitness: Vec<f32>,
     pub ticks: u64,
+    /// Rounds won, drawn and lost against real bots, when there were any.
+    pub robots: Option<Record>,
 }
 
 /// Every candidate plays match k against `opps[k]` on `terrains[k]`
@@ -236,7 +329,11 @@ pub fn eval_population(
         fitness[i] += f / k as f32;
         ticks += t;
     }
-    EvalOutcome { fitness, ticks }
+    EvalOutcome {
+        fitness,
+        ticks,
+        robots: None,
+    }
 }
 
 /// Population of fixed-topology networks (`members` are flat parameter vectors).
@@ -489,6 +586,7 @@ pub fn eval_population_gpu(
     Ok(EvalOutcome {
         fitness: fitness_sum,
         ticks,
+        robots: None,
     })
 }
 

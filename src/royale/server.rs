@@ -555,14 +555,16 @@ impl BotDir {
         } else {
             self.dir.join(format!("{base}.sh"))
         };
-        let mut cmd = if script.exists() {
+        // Scripts run from the bot directory, so they are named relative to it.
+        let cmd = if script.exists() {
+            let file = script.file_name().unwrap();
             if cfg!(windows) {
                 let mut c = Command::new("cmd");
-                c.arg("/C").arg(&script);
+                c.arg("/C").arg(file);
                 c
             } else {
                 let mut c = Command::new("sh");
-                c.arg(&script);
+                c.arg(file);
                 c
             }
         } else if self.dir.join(format!("{base}.java")).exists() {
@@ -582,10 +584,70 @@ impl BotDir {
                 self.dir.display()
             )));
         };
+        let mut cmd = sandbox(&cmd, &self.dir).unwrap_or(cmd);
         cmd.current_dir(&self.dir)
             .env("SERVER_URL", server_url)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
     }
+}
+
+/// The sandbox `BotDir::launch` starts bots in, if any: bubblewrap on Linux
+/// when it is installed, unless `CLAUDE_TANKS_NO_SANDBOX` is set.
+pub fn sandbox_name() -> Option<&'static str> {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let found = *FOUND.get_or_init(|| {
+        cfg!(target_os = "linux")
+            && Command::new("bwrap")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+    });
+    (found && std::env::var_os("CLAUDE_TANKS_NO_SANDBOX").is_none()).then_some("bubblewrap")
+}
+
+/// `cmd` wrapped in bubblewrap: the system is read-only, the home folder is
+/// hidden except the bot's collection (read-only) and the bot's own directory
+/// (writable: classic robots keep data files there). Bots still reach the
+/// network, which they need to join the server. Killing the returned process
+/// ends everything the bot started.
+fn sandbox(cmd: &Command, dir: &Path) -> Option<Command> {
+    sandbox_name()?;
+    let dir = dir.canonicalize().ok()?;
+    let collection = dir.parent()?;
+    let mut b = Command::new("bwrap");
+    b.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
+    b.args(["--tmpfs", "/tmp"]);
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        b.arg("--tmpfs").arg(&home);
+        // Python packages, and a JDK or Python installed in the home folder.
+        let mut keep = vec![home.join(".local")];
+        for exe in ["java", "python3"] {
+            if let Some(root) = install_root(exe) {
+                keep.push(root);
+            }
+        }
+        for k in keep.iter().filter(|k| k.starts_with(&home) && k.is_dir()) {
+            b.arg("--ro-bind").arg(k).arg(k);
+        }
+    }
+    b.arg("--ro-bind").arg(collection).arg(collection);
+    b.arg("--bind").arg(&dir).arg(&dir);
+    b.args(["--unshare-pid", "--unshare-ipc", "--unshare-uts"]);
+    b.args(["--die-with-parent", "--new-session", "--chdir"])
+        .arg(&dir);
+    b.arg("--").arg(cmd.get_program()).args(cmd.get_args());
+    Some(b)
+}
+
+/// The installation folder of a program on the PATH (`<root>/bin/<exe>`).
+fn install_root(exe: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let found = std::env::split_paths(&path)
+        .map(|d| d.join(exe))
+        .find(|p| p.is_file())?;
+    Some(found.canonicalize().ok()?.parent()?.parent()?.to_path_buf())
 }

@@ -11,6 +11,8 @@ pub mod ppo;
 use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, Brain, Genes, ModelFile, models_dir};
 use crate::rng::Rng;
+use crate::royale::pool::RobotPool;
+use crate::royale::server::{BotDir, sandbox_name};
 use crate::royale::sparring::Sparring;
 use crate::sim::Rules;
 use crossbeam_channel::{Receiver, Sender};
@@ -118,6 +120,19 @@ pub struct TrainConfig {
     /// Our game, or Robocode's (GA and ES only; no imitation, no GPU).
     #[serde(default)]
     pub rules: Rules,
+    /// Robocode rules: real bots (bot directories) to battle in training, each
+    /// kept running in `robot_slots` processes. Empty: sample-bot ports only.
+    #[serde(default)]
+    pub robots: Vec<String>,
+    /// Battles per candidate and generation against the robots (both members
+    /// of an ES pair meet the same robot).
+    #[serde(default = "one")]
+    pub robot_battles: usize,
+    /// Rounds per robot battle; each round weighs as much as one duel.
+    #[serde(default = "three")]
+    pub robot_rounds: u32,
+    #[serde(default = "two")]
+    pub robot_slots: usize,
     /// Warm start fixed-topology nets by imitating the scripted bot.
     pub imitation: imitation::ImitationParams,
     pub ga: ga::GaParams,
@@ -140,6 +155,18 @@ fn max_level() -> u8 {
 
 fn veteran() -> u8 {
     VETERAN
+}
+
+fn one() -> usize {
+    1
+}
+
+fn two() -> usize {
+    2
+}
+
+fn three() -> u32 {
+    3
 }
 
 impl Default for TrainConfig {
@@ -172,6 +199,10 @@ impl Default for TrainConfig {
             shaping_gens: 300,
             eval_matches: 96,
             rules: Rules::Tanks,
+            robots: Vec::new(),
+            robot_battles: one(),
+            robot_rounds: three(),
+            robot_slots: two(),
             imitation: imitation::ImitationParams::default(),
             ga: ga::GaParams::default(),
             es: es::EsParams::default(),
@@ -273,6 +304,10 @@ pub struct StepEnv<'a> {
     pub terrains: Vec<crate::sim::Terrain>,
     pub shaping: Shaping,
     pub rng: &'a mut Rng,
+    /// Real bots to battle (Robocode rules), and the robots each member pair
+    /// meets this generation: pair p plays `robot_plan[p * robot_battles..][..robot_battles]`.
+    pub robots: Option<&'a crate::royale::pool::RobotPool>,
+    pub robot_plan: Vec<usize>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -426,6 +461,43 @@ pub fn spawn(cfg: TrainConfig, resume: Option<RunState>) -> TrainHandle {
 
 fn cfg_copy_threads(cfg: &TrainConfig, resume: Option<&RunState>) -> usize {
     resume.map_or(cfg.threads, |r| r.cfg.threads).max(1)
+}
+
+/// Start the run's real bots (Robocode rules); unreadable directories are
+/// reported and skipped.
+fn start_robots(cfg: &TrainConfig, tx: &Sender<Msg>) -> Option<RobotPool> {
+    if cfg.rules != Rules::Robocode || cfg.robots.is_empty() {
+        return None;
+    }
+    let bots: Vec<BotDir> = cfg
+        .robots
+        .iter()
+        .filter_map(|d| {
+            let b = BotDir::read(d.as_ref());
+            if b.is_none() {
+                let _ = tx.send(Msg::Log(format!("Robots: not a bot directory: {d}")));
+            }
+            b
+        })
+        .collect();
+    if bots.is_empty() {
+        return None;
+    }
+    let n = bots.len();
+    match RobotPool::start(bots, cfg.robot_slots) {
+        Ok(p) => {
+            let _ = tx.send(Msg::Log(format!(
+                "Robots: {n} bots, {} processes, sandbox: {}",
+                p.slots(),
+                sandbox_name().unwrap_or("none")
+            )));
+            Some(p)
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::Log(format!("Robots: cannot start: {e}")));
+            None
+        }
+    }
 }
 
 /// Load the league models; unreadable files are reported and skipped.
@@ -689,6 +761,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
     if !league.is_empty() {
         let _ = tx.send(Msg::Log(format!("League: {} models", league.len())));
     }
+    let robots = start_robots(&st.cfg, tx);
     let mut paused = false;
     loop {
         // Commands.
@@ -743,6 +816,21 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
         let terrains = eval::terrains(&mut st.rng, cfg.matches, cfg.density);
         let use_gpu = device.pick();
         let t_step = Instant::now();
+        // Every working robot in turn, from a random one: pairs next to each
+        // other meet different robots, so their battles run side by side.
+        let robot_plan = match &robots {
+            Some(p) => {
+                let alive: Vec<usize> = (0..p.bots().len()).filter(|&b| p.alive(b)).collect();
+                let from = st.rng.below(alive.len().max(1));
+                let n = if alive.is_empty() {
+                    0
+                } else {
+                    cfg.population.div_ceil(2) * cfg.robot_battles
+                };
+                (0..n).map(|k| alive[(from + k) % alive.len()]).collect()
+            }
+            None => Vec::new(),
+        };
         let rep = st.trainer.step(StepEnv {
             cfg: &cfg,
             use_gpu,
@@ -751,6 +839,8 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             terrains,
             shaping,
             rng: &mut st.rng,
+            robots: robots.as_ref(),
+            robot_plan,
         });
         if let Some(l) = device.record(use_gpu, t_step.elapsed().as_secs_f64(), rep.ticks) {
             let _ = tx.send(Msg::Log(format!("Gen {}: {l}", st.generation)));
