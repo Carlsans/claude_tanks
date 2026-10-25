@@ -11,7 +11,7 @@ pub mod ppo;
 use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, Brain, Genes, ModelFile, models_dir};
 use crate::rng::Rng;
-use crate::royale::pool::RobotPool;
+use crate::royale::pool::{BOT_MEMORY_MB, RobotPool, available_memory_mb};
 use crate::royale::server::{BotDir, sandbox_name};
 use crate::royale::sparring::Sparring;
 use crate::sim::Rules;
@@ -508,7 +508,7 @@ fn start_robots(cfg: &TrainConfig, dirs: &[String], tx: &Sender<Msg>) -> Option<
     if cfg.rules != Rules::Robocode || dirs.is_empty() {
         return None;
     }
-    let bots: Vec<BotDir> = dirs
+    let mut bots: Vec<BotDir> = dirs
         .iter()
         .filter_map(|d| {
             let b = BotDir::read(d.as_ref());
@@ -520,6 +520,18 @@ fn start_robots(cfg: &TrainConfig, dirs: &[String], tx: &Sender<Msg>) -> Option<
         .collect();
     if bots.is_empty() {
         return None;
+    }
+    // Swapping slows everything down, training included: keep the bots to
+    // three quarters of the free memory.
+    if let Some(free) = available_memory_mb() {
+        let fit = (free * 3 / 4 / (cfg.robot_slots.max(1) as u64 * BOT_MEMORY_MB)).max(1);
+        if (fit as usize) < bots.len() {
+            let _ = tx.send(Msg::Log(format!(
+                "Robots: only {fit} of {} fit in the {free} MB of free memory",
+                bots.len()
+            )));
+            bots.truncate(fit as usize);
+        }
     }
     let n = bots.len();
     match RobotPool::start(bots, cfg.robot_slots) {

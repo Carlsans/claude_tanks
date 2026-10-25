@@ -16,6 +16,12 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 7654;
 
+/// Java options for every bot `BotDir::launch` starts. By default a JVM may
+/// grow to a quarter of the memory, and robots that keep learning do grow:
+/// 32 of them pushed a 32 GB machine deep into swap. Classic Robocode ran all
+/// the robots of a battle in one 512 MB JVM.
+const BOT_JAVA_OPTIONS: &str = "-Xmx256m -XX:+UseSerialGC";
+
 /// A connected bot.
 #[derive(Clone, Debug)]
 pub struct Conn {
@@ -584,9 +590,15 @@ impl BotDir {
                 self.dir.display()
             )));
         };
+        // Options already in the environment come last, so they win.
+        let java_options = match std::env::var("JDK_JAVA_OPTIONS") {
+            Ok(own) => format!("{BOT_JAVA_OPTIONS} {own}"),
+            Err(_) => BOT_JAVA_OPTIONS.to_string(),
+        };
         let mut cmd = sandbox(&cmd, &self.dir).unwrap_or(cmd);
         cmd.current_dir(&self.dir)
             .env("SERVER_URL", server_url)
+            .env("JDK_JAVA_OPTIONS", java_options)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

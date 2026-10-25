@@ -16,6 +16,16 @@ const CONNECT: Duration = Duration::from_secs(45);
 const BATTLE_LIMIT: Duration = Duration::from_secs(300);
 /// A bot that fails this many battles in a row is given up.
 const MAX_FAILURES: u32 = 3;
+/// Memory one bot process may take: the heap `BotDir::launch` allows a JVM,
+/// plus the JVM itself.
+pub const BOT_MEMORY_MB: u64 = 400;
+
+/// Memory available for new processes, in MB (Linux only).
+pub fn available_memory_mb() -> Option<u64> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = info.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    Some(line.split_whitespace().nth(1)?.parse::<u64>().ok()? / 1024)
+}
 
 /// One battle, from our side.
 #[derive(Clone, Copy, Debug, Default)]
