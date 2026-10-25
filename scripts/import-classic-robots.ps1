@@ -38,6 +38,8 @@ Fetch "$Maven/dev/robocode/tankroyale/robocode-tankroyale-bot-api/1.4.0/robocode
 Fetch "$Maven/org/apache/bcel/bcel/6.13.0/bcel-6.13.0.jar" "bcel.jar"
 Fetch "$Maven/org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.jar" "commons-lang3.jar"
 Fetch "$Maven/commons-io/commons-io/2.22.0/commons-io-2.22.0.jar" "commons-io.jar"
+# Robots written in Kotlin need its standard library, as classic Robocode ships it.
+Fetch "$Maven/org/jetbrains/kotlin/kotlin-stdlib/1.9.24/kotlin-stdlib-1.9.24.jar" "kotlin-stdlib.jar"
 Fetch "https://github.com/robocode-dev/robocode-api-bridge/archive/$BridgeCommit.tar.gz" "bridge.tar.gz"
 
 Push-Location $Cache
@@ -65,7 +67,7 @@ try {
 }
 
 Copy-Item (Join-Path $Robots "*.jar") $Out
-Copy-Item (Join-Path $Cache "robocode-api.jar"), (Join-Path $Cache "bot-api.jar") (Join-Path $Out "lib")
+Copy-Item (Join-Path $Cache "robocode-api.jar"), (Join-Path $Cache "bot-api.jar"), (Join-Path $Cache "kotlin-stdlib.jar") (Join-Path $Out "lib")
 $cp = ("wrapper", "robocode-api.jar", "bcel.jar", "commons-lang3.jar", "commons-io.jar" |
     ForEach-Object { Join-Path $Cache $_ }) -join ";"
 Push-Location $Out

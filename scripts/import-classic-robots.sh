@@ -30,6 +30,8 @@ fetch "$MAVEN/dev/robocode/tankroyale/robocode-tankroyale-bot-api/1.4.0/robocode
 fetch "$MAVEN/org/apache/bcel/bcel/6.13.0/bcel-6.13.0.jar" bcel.jar
 fetch "$MAVEN/org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.jar" commons-lang3.jar
 fetch "$MAVEN/commons-io/commons-io/2.22.0/commons-io-2.22.0.jar" commons-io.jar
+# Robots written in Kotlin need its standard library, as classic Robocode ships it.
+fetch "$MAVEN/org/jetbrains/kotlin/kotlin-stdlib/1.9.24/kotlin-stdlib-1.9.24.jar" kotlin-stdlib.jar
 fetch "https://github.com/robocode-dev/robocode-api-bridge/archive/$BRIDGE_COMMIT.tar.gz" bridge.tar.gz
 
 if [ ! -s robocode-api.jar ] || [ ! -d wrapper ]; then
@@ -44,6 +46,6 @@ if [ ! -s robocode-api.jar ] || [ ! -d wrapper ]; then
 fi
 
 cp "$SRC"/*.jar "$OUT"/
-cp robocode-api.jar bot-api.jar "$OUT/lib/"
+cp robocode-api.jar bot-api.jar kotlin-stdlib.jar "$OUT/lib/"
 (cd "$OUT" && java -cp "$CACHE/wrapper:$CACHE/robocode-api.jar:$CACHE/bcel.jar:$CACHE/commons-lang3.jar:$CACHE/commons-io.jar" Main "$OUT")
 echo "Done: point the Robocode tab's bot folder at $OUT"
