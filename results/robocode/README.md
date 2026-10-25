@@ -94,6 +94,9 @@ Earlier, an 8-minute snapshot of RC1 had won 49 of 50 rounds against TrackFire, 
 | RC3b best | 539 (44.9%) | +1.2 ± 1.5 |
 | RC3b ema | 509 (42.4%) | |
 | RC3b latest | 502 (41.8%) | |
+| RC4 best | 593 (49.4%) | +5.7 ± 2.1 |
+| **RC4 latest** | **615 (51.2%)** | **+7.5 ± 2.2** (+2.1 ± 1.6 against RC3a latest) |
+| RC4 ema | 587 (48.9%) | +5.2 ± 2.1 |
 
 The RoboRumble field is far stronger than the samples: our champion wins only 45% of rounds over all 1217 robots that run ([survey](survey.md)).
 
@@ -106,6 +109,7 @@ The RoboRumble field is far stronger than the samples: our champion wins only 45
 - **Robocode champion:** RC1 ema → [`models/champions/gru_es_robocode.json`](../../models/champions/gru_es_robocode.json). It is the most balanced network: second in the round-robin, at least 53% against every network except RC1 latest, 77.5% against the day champion, 92% against the real bots, and no real bot below 16–4.
 - **RC3a: confirmed.** With the league, two more hours raised the held-out RoboRumble score from 43.8% to 49.2% of rounds (+5.4 ± 1.8 points per robot), while keeping 97% against the ports.
 - **RC3b (control) drifted.** Without the league, the network slowly got worse: 88% against the ports, 40% against the day champion and 41.8% of rounds against the held-out robots by the end. Playing only its own past versions taught it nothing general.
-- RC3a latest is the start of RC4 (running).
+- **RC4: starved, inconclusive.** The run managed only 108 generations in 4 hours instead of about 1300. Generations took 10 s for the first 50, then slowed to as much as 1400 s: each robot is a JVM that may grow to a quarter of the memory by default, and 32 robots that keep learning pushed the machine deep into swap. RC4 latest still wins 51.2% of the held-out rounds, but +2.1 ± 1.6 points per robot over its start (RC3a latest) is within the noise. Bots now start with a 256 MB heap (8 strong robots over 240 rounds each: 2.1 GB instead of 3.9 GB, same speed), and training starts only as many robots as fit in the free memory.
+- **RC4b** reruns RC4 with the memory cap and 24 robots at a time (running).
 
 Every RC network is in [`models/robocode/`](../../models/robocode).
