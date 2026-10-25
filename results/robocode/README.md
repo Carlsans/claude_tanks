@@ -6,6 +6,7 @@
 - `royale_eval <model> 1000 <label>`: 1000 one-round duels against each of the five built-in sample-bot ports, and 1000 against the day champion. Raw records are in [`scores.jsonl`](scores.jsonl). The training run picks `best.json` on the first 100 of the same port seeds, so `best` is slightly flattered there.
 - `royale_tournament 1000 <out> <label>=<model> ...`: round-robin between networks and the five ports, with an Elo fit ([`tournament_rc.md`](tournament_rc.md), full matrix in [`tournament_rc.json`](tournament_rc.json)).
 - **The real bots:** 20 rounds against each of the ten one-bot samples of Tank Royale 1.4.0 (Java), through our server ([`real_bots_rc.md`](real_bots_rc.md)). Five of them have no port, so the networks never met them in training.
+- **Held-out RoboRumble robots** (from RC3 on): `royale_survey` with 10 rounds against each of 120 robots spread over the strength range of the 393 held-out robots of the [split](rumble_split.json) (records in [`test120/`](test120)). Comparisons are paired: the same robots, placements and rounds for every network.
 
 ## Plan
 
@@ -15,6 +16,7 @@
 | RC2 | 64 duels per candidate (half the fitness noise) beat 32 | As RC1 with `matches=64` | 2 h, 8 threads, in parallel |
 | RC3a | The RC networks play rock–paper–scissors (see below). Fixed opponents of other styles (a league) make a network that beats all of them | From RC1 ema. 30% ports, 35% league of 9 frozen networks (day, night and MLP-L night champions, R4b ema, RC1 best and latest, RC2 best, ema and latest), 35% own hall of fame. Shaping 0.15 | 2 h, 8 threads |
 | RC3b | Control | As RC3a without the league: 30% ports, 70% own hall of fame | 2 h, 8 threads, in parallel |
+| RC4 | Real opponents beat ports and relatives: training against hundreds of RoboRumble robots carries over to robots never met | From RC3a latest. Each candidate per generation: 2 battles of 3 rounds against real robots (787 training robots of the [split](rumble_split.json), 32 running at a time, a new group every 20 generations) plus 8 duels (25% ports, the league with the old champion in place of RC3a latest, own hall of fame) | 4 h, 8 threads + 32 robot processes |
 
 ## Results
 
@@ -29,6 +31,12 @@
 | RC2 best | 98.3 | 99.3 | 99.1 | 99.2 | 100.0 | 99.2 | 97.9 |
 | RC2 latest | 97.7 | 99.5 | 97.9 | 99.0 | 100.0 | 98.8 | 95.2 |
 | RC2 ema | 98.6 | 99.4 | 99.3 | 99.8 | 100.0 | **99.4** | 95.9 |
+| RC3a best | 97.5 | 99.2 | 99.6 | 99.9 | 97.1 | 98.7 | 64.5 |
+| RC3a latest | 92.9 | 99.7 | 99.1 | 99.9 | 93.9 | 97.1 | 60.6 |
+| RC3a ema | 93.4 | 98.8 | 98.6 | 100.0 | 92.0 | 96.6 | 61.5 |
+| RC3b best | 97.4 | 99.7 | 97.0 | 99.9 | 97.4 | 98.3 | 72.2 |
+| RC3b latest | 80.4 | 87.9 | 81.7 | 99.9 | 90.5 | 88.1 | 39.6 |
+| RC3b ema | 92.4 | 93.2 | 87.8 | 99.7 | 91.5 | 92.9 | 46.0 |
 
 ### Round-robin (`royale_tournament`, 1000 duels per pairing)
 
@@ -72,6 +80,20 @@ The networks are deterministic, so 0% or 100% over 1000 starting positions means
 
 Earlier, an 8-minute snapshot of RC1 had won 49 of 50 rounds against TrackFire, SpinBot, Walls, Corners and VelociBot.
 
+### Against 120 held-out RoboRumble robots (rounds won of 1200)
+
+| Network | Rounds won | vs the champion, per robot (paired) |
+|---|---|---|
+| Champion (RC1 ema) | 525 (43.8%) | – |
+| RC3a best | 526 (43.8%) | |
+| **RC3a latest** | **590 (49.2%)** | **+5.4 ± 1.8 points** |
+| RC3a ema | 556 (46.3%) | +2.6 ± 2.1 |
+| RC3b best | 539 (44.9%) | +1.2 ± 1.5 |
+| RC3b ema | 509 (42.4%) | |
+| RC3b latest | 502 (41.8%) | |
+
+The RoboRumble field is far stronger than the samples: our champion wins only 45% of rounds over all 1217 robots that run ([survey](survey.md)).
+
 ## Verdicts
 
 - **RC1: confirmed.** Within 8 minutes the day champion went from 65% to 95–99% against the ports. The skill carries over to the real bots, including the five it never met: 88–96% of rounds.
@@ -79,6 +101,8 @@ Earlier, an 8-minute snapshot of RC1 had won 49 of 50 rounds against TrackFire, 
 - **Two hours of self-play specialize.** RC1 latest beats every other RC network 90–100%, but it only ties the day champion (48.4%) and loses 8 of 20 rounds to the real Walls. Its own hall of fame taught it to beat its relatives, not other styles.
 - **RC2: refuted.** With 64 duels per candidate, all three RC2 files rank below RC1 latest and ema in the round-robin, and do no better against the real bots.
 - **Robocode champion:** RC1 ema → [`models/champions/gru_es_robocode.json`](../../models/champions/gru_es_robocode.json). It is the most balanced network: second in the round-robin, at least 53% against every network except RC1 latest, 77.5% against the day champion, 92% against the real bots, and no real bot below 16–4.
-- RC3a and RC3b are running.
+- **RC3a: confirmed.** With the league, two more hours raised the held-out RoboRumble score from 43.8% to 49.2% of rounds (+5.4 ± 1.8 points per robot), while keeping 97% against the ports.
+- **RC3b (control) drifted.** Without the league, the network slowly got worse: 88% against the ports, 40% against the day champion and 41.8% of rounds against the held-out robots by the end. Playing only its own past versions taught it nothing general.
+- RC3a latest is the start of RC4 (running).
 
-All six RC networks are in [`models/robocode/`](../../models/robocode).
+Every RC network is in [`models/robocode/`](../../models/robocode).
