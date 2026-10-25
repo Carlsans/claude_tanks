@@ -472,6 +472,11 @@ impl TrainTab {
                     ui.add(egui::Slider::new(&mut c.robot_battles, 1..=8).text("battles per candidate"));
                     ui.add(egui::Slider::new(&mut c.robot_rounds, 1..=35).text("rounds per battle"));
                     ui.add(egui::Slider::new(&mut c.robot_slots, 1..=8).text("processes per bot"));
+                    ui.add(egui::Slider::new(&mut c.robot_active, 0..=256).text("bots running at once (0 = all)"))
+                        .on_hover_text("With fewer than selected, training moves to the next group of bots every few generations.");
+                    if c.robot_active > 0 {
+                        ui.add(egui::Slider::new(&mut c.robot_rotate, 1..=500).text("generations per group"));
+                    }
                 });
             }
             match c.method {

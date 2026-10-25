@@ -133,6 +133,12 @@ pub struct TrainConfig {
     pub robot_rounds: u32,
     #[serde(default = "two")]
     pub robot_slots: usize,
+    /// Robots running at once (0: all). When fewer than `robots`, the run
+    /// moves to the next group every `robot_rotate` generations.
+    #[serde(default)]
+    pub robot_active: usize,
+    #[serde(default = "twenty_five")]
+    pub robot_rotate: u32,
     /// Warm start fixed-topology nets by imitating the scripted bot.
     pub imitation: imitation::ImitationParams,
     pub ga: ga::GaParams,
@@ -169,6 +175,10 @@ fn three() -> u32 {
     3
 }
 
+fn twenty_five() -> u32 {
+    25
+}
+
 impl Default for TrainConfig {
     fn default() -> Self {
         TrainConfig {
@@ -203,6 +213,8 @@ impl Default for TrainConfig {
             robot_battles: one(),
             robot_rounds: three(),
             robot_slots: two(),
+            robot_active: 0,
+            robot_rotate: twenty_five(),
             imitation: imitation::ImitationParams::default(),
             ga: ga::GaParams::default(),
             es: es::EsParams::default(),
@@ -463,14 +475,40 @@ fn cfg_copy_threads(cfg: &TrainConfig, resume: Option<&RunState>) -> usize {
     resume.map_or(cfg.threads, |r| r.cfg.threads).max(1)
 }
 
-/// Start the run's real bots (Robocode rules); unreadable directories are
-/// reported and skipped.
-fn start_robots(cfg: &TrainConfig, tx: &Sender<Msg>) -> Option<RobotPool> {
-    if cfg.rules != Rules::Robocode || cfg.robots.is_empty() {
+/// Which group of `robot_active` robots runs at `generation`.
+fn robot_group_at(cfg: &TrainConfig, generation: u32) -> usize {
+    if cfg.robot_active == 0 || cfg.robot_active >= cfg.robots.len() {
+        0
+    } else {
+        (generation / cfg.robot_rotate.max(1)) as usize
+    }
+}
+
+/// The robots of group `group`: consecutive slices of the robots in a fixed
+/// shuffled order, wrapping around at the end.
+fn robot_group_dirs(cfg: &TrainConfig, group: usize) -> Vec<String> {
+    let n = cfg.robots.len();
+    if cfg.robot_active == 0 || cfg.robot_active >= n {
+        return cfg.robots.clone();
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    let mut rng = Rng::new(cfg.seed ^ 0x0B07_5EED);
+    for i in (1..n).rev() {
+        order.swap(i, rng.below(i + 1));
+    }
+    let from = group * cfg.robot_active;
+    (from..from + cfg.robot_active)
+        .map(|k| cfg.robots[order[k % n]].clone())
+        .collect()
+}
+
+/// Start real bots (Robocode rules); unreadable directories are reported and
+/// skipped.
+fn start_robots(cfg: &TrainConfig, dirs: &[String], tx: &Sender<Msg>) -> Option<RobotPool> {
+    if cfg.rules != Rules::Robocode || dirs.is_empty() {
         return None;
     }
-    let bots: Vec<BotDir> = cfg
-        .robots
+    let bots: Vec<BotDir> = dirs
         .iter()
         .filter_map(|d| {
             let b = BotDir::read(d.as_ref());
@@ -487,7 +525,8 @@ fn start_robots(cfg: &TrainConfig, tx: &Sender<Msg>) -> Option<RobotPool> {
     match RobotPool::start(bots, cfg.robot_slots) {
         Ok(p) => {
             let _ = tx.send(Msg::Log(format!(
-                "Robots: {n} bots, {} processes, sandbox: {}",
+                "Robots: {n} of {} bots running, {} processes, sandbox: {}",
+                cfg.robots.len(),
                 p.slots(),
                 sandbox_name().unwrap_or("none")
             )));
@@ -761,7 +800,7 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
     if !league.is_empty() {
         let _ = tx.send(Msg::Log(format!("League: {} models", league.len())));
     }
-    let robots = start_robots(&st.cfg, tx);
+    let (mut robots, mut robot_group) = (None, None);
     let mut paused = false;
     loop {
         // Commands.
@@ -814,6 +853,13 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
             &mut st.rng,
         );
         let terrains = eval::terrains(&mut st.rng, cfg.matches, cfg.density);
+        let group = robot_group_at(&cfg, st.generation);
+        if robot_group != Some(group) {
+            // Stop the old group before starting the next.
+            drop(robots.take());
+            robots = start_robots(&cfg, &robot_group_dirs(&cfg, group), tx);
+            robot_group = Some(group);
+        }
         let use_gpu = device.pick();
         let t_step = Instant::now();
         // Every working robot in turn, from a random one: pairs next to each
