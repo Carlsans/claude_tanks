@@ -7,6 +7,7 @@
 - `royale_tournament 1000 <out> <label>=<model> ...`: round-robin between networks and the five ports, with an Elo fit ([`tournament_rc.md`](tournament_rc.md), full matrix in [`tournament_rc.json`](tournament_rc.json)).
 - **The real bots:** 20 rounds against each of the ten one-bot samples of Tank Royale 1.4.0 (Java), through our server ([`real_bots_rc.md`](real_bots_rc.md)). Five of them have no port, so the networks never met them in training.
 - **Held-out RoboRumble robots** (from RC3 on): `royale_survey` with 10 rounds against each of 120 robots spread over the strength range of the 393 held-out robots of the [split](rumble_split.json) (records in [`test120/`](test120)). Comparisons are paired: the same robots, placements and rounds for every network.
+- **Full RoboRumble battles** (from 25 October): `royale_survey <test120> <model> 35` plays the same 120 robots for 35 rounds, as in the RoboRumble, under a fresh name each time (records in [`test120x35/`](test120x35)). Records keep every round's winner, so they show whether the robots learn our network over a battle.
 
 ## Plan
 
@@ -17,6 +18,11 @@
 | RC3a | The RC networks play rock–paper–scissors (see below). Fixed opponents of other styles (a league) make a network that beats all of them | From RC1 ema. 30% ports, 35% league of 9 frozen networks (day, night and MLP-L night champions, R4b ema, RC1 best and latest, RC2 best, ema and latest), 35% own hall of fame. Shaping 0.15 | 2 h, 8 threads |
 | RC3b | Control | As RC3a without the league: 30% ports, 70% own hall of fame | 2 h, 8 threads, in parallel |
 | RC4 | Real opponents beat ports and relatives: training against hundreds of RoboRumble robots carries over to robots never met | From RC3a latest. Each candidate per generation: 2 battles of 3 rounds against real robots (787 training robots of the [split](rumble_split.json), 32 running at a time, a new group every 20 generations) plus 8 duels (25% ports, the league with the old champion in place of RC3a latest, own hall of fame) | 4 h, 8 threads + 32 robot processes |
+| RC4b | RC4 again, without the swapping | As RC4 with 256 MB robot heaps, 24 robots at a time and robots that skip turns or take over 8 ms a turn left out | 4 h, 8 threads + 24 robot processes |
+| M0 | Control for M1–M3 | From RC4b latest. Each candidate per generation: 1 battle of 6 rounds against a real robot (10 running at a time, a new group every 10 generations) plus 8 duels as in RC4 | 300 generations, 4 threads + 10 robot processes |
+| M1 | A network that keeps its state from one round to the next can learn the opponent over a battle | As M0 with `keep_state=true` | same, in parallel |
+| M2 | Battle statistics as inputs (rounds won, both hit rates, damage balance, guess factors; `gru_mem`) let training find when to close in on a weak or evasive opponent | As M0 with the `gru_mem` architecture (RC4b latest copied in, new inputs starting at zero weight) | same, in parallel |
+| M3 | Both together | `gru_mem` with `keep_state=true` | same, in parallel |
 
 ## Results
 
@@ -40,6 +46,9 @@
 | RC4 best | 90.3 | 99.0 | 99.5 | 100.0 | 93.1 | 96.4 | 63.0 |
 | RC4 latest | 90.8 | 98.3 | 97.4 | 100.0 | 89.0 | 95.1 | 66.7 |
 | RC4 ema | 93.0 | 98.5 | 97.9 | 99.9 | 92.9 | 96.4 | 64.9 |
+| RC4b best | 97.1 | 98.3 | 98.7 | 100.0 | 97.1 | 98.2 | 78.9 |
+| RC4b latest | 87.5 | 97.4 | 97.5 | 100.0 | 93.9 | 95.3 | 65.6 |
+| RC4b ema | 92.2 | 98.2 | 99.6 | 99.9 | 93.1 | 96.6 | 69.8 |
 
 ### Round-robin (`royale_tournament`, 1000 duels per pairing)
 
@@ -100,6 +109,22 @@ Earlier, an 8-minute snapshot of RC1 had won 49 of 50 rounds against TrackFire, 
 
 The RoboRumble field is far stronger than the samples: our champion wins only 45% of rounds over all 1217 robots that run ([survey](survey.md)).
 
+These 10-round surveys all played under the run's name, and about 11 of the 120 robots save what they learn about an opponent in files named after it. So each network after the first of a run met some robots that already knew its relatives (order: RC3a best, latest, ema; RC4 latest, ema, best). The 35-round surveys below play under a fresh name each time.
+
+### Full battles: 35 rounds against the same 120 robots (rounds won of 4200)
+
+| Network | Rounds won | Rounds 1–5 | 26–35 | vs the champion, per robot (paired) |
+|---|---|---|---|---|
+| Champion (RC1 ema) | 1743 (41.5%) | 43.3% | 41.2% | – |
+| RC3a latest | 2035 (48.5%) | 51.7% | 48.3% | +7.0 ± 1.8 points |
+| RC4 latest | 2118 (50.4%) | 52.3% | 49.0% | +8.9 ± 1.9 |
+| RC4 latest, state kept between rounds (untrained) | 2055 (48.9%) | 51.2% | 47.9% | (−1.5 ± 0.7 against RC4 latest) |
+| RC4b best | 2037 (48.5%) | 50.7% | 48.5% | +7.0 ± 1.7 |
+| **RC4b latest** | **2162 (51.5%)** | 53.7% | 51.3% | **+10.0 ± 2.0** (+1.0 ± 0.9 against RC4 latest) |
+| RC4b ema | 2157 (51.4%) | 54.3% | 50.6% | +9.9 ± 1.8 (+0.9 ± 0.9 against RC4 latest) |
+
+The ranking is the same as in the 10-round surveys. **The robots learn our networks a little over a battle:** every network wins fewer of rounds 26–35 than of rounds 1–10, by 1.2 to 2.8 points per robot (each within about one standard error, but all seven agree). Some robots clearly adapt (TimmiT, FloodSonnet, Hamilton, Saguaro, AFlatNatural, Jen, moonlightBat, ApolloKidd), while others do worse as the battle goes on (MorbidPriest, CannonfodderNano, Sunderer, NanoSatan). Our networks forget everything between rounds; M1–M3 test whether remembering helps.
+
 ## Verdicts
 
 - **RC1: confirmed.** Within 8 minutes the day champion went from 65% to 95–99% against the ports. The skill carries over to the real bots, including the five it never met: 88–96% of rounds.
@@ -110,6 +135,8 @@ The RoboRumble field is far stronger than the samples: our champion wins only 45
 - **RC3a: confirmed.** With the league, two more hours raised the held-out RoboRumble score from 43.8% to 49.2% of rounds (+5.4 ± 1.8 points per robot), while keeping 97% against the ports.
 - **RC3b (control) drifted.** Without the league, the network slowly got worse: 88% against the ports, 40% against the day champion and 41.8% of rounds against the held-out robots by the end. Playing only its own past versions taught it nothing general.
 - **RC4: starved, inconclusive.** The run managed only 108 generations in 4 hours instead of about 1300. Generations took 10 s for the first 50, then slowed to as much as 1400 s: each robot is a JVM that may grow to a quarter of the memory by default, and 32 robots that keep learning pushed the machine deep into swap. RC4 latest still wins 51.2% of the held-out rounds, but +2.1 ± 1.6 points per robot over its start (RC3a latest) is within the noise. Bots now start with a 256 MB heap (8 strong robots over 240 rounds each: 2.1 GB instead of 3.9 GB, same speed), and training starts only as many robots as fit in the free memory.
-- **RC4b** reruns RC4 with the memory cap and 24 robots at a time (running).
+- **RC4b: modest, within the noise.** Without the swapping, RC4b ran 825 generations in 4 hours. Its latest network wins 51.5% of the rounds of full battles against the held-out robots, the best so far, but only +1.0 ± 0.9 points per robot over RC4 latest. RC4b latest is the starting point of M0–M3.
+- **Keeping the state between rounds needs training.** Simply letting RC4 latest carry its state over costs 1.5 ± 0.7 points: it was trained to start each round fresh.
+- **M0–M3** (running) compare memory between rounds against a control, 300 generations each, all four at once.
 
 Every RC network is in [`models/robocode/`](../../models/robocode).
