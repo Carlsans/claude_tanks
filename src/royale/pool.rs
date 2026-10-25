@@ -123,6 +123,8 @@ pub struct RobotPool {
     freed: Condvar,
     failures: Vec<AtomicU32>,
     stats: Vec<Mutex<BotStats>>,
+    /// The name our pilots battle under.
+    name: String,
 }
 
 impl RobotPool {
@@ -143,6 +145,7 @@ impl RobotPool {
         }
         Ok(RobotPool {
             failures: bots.iter().map(|_| AtomicU32::new(0)).collect(),
+            name: "Candidate".into(),
             stats: bots.iter().map(|_| Mutex::default()).collect(),
             busy: Mutex::new(vec![false; slots.len()]),
             bots,
@@ -150,6 +153,14 @@ impl RobotPool {
             slots,
             freed: Condvar::new(),
         })
+    }
+
+    /// Our pilots battle under `name`. Some robots save what they learn
+    /// about an opponent in files named after it, so runs that share robots
+    /// at the same time should use different names.
+    pub fn named(mut self, name: &str) -> RobotPool {
+        self.name = name.into();
+        self
     }
 
     pub fn bots(&self) -> &[BotDir] {
@@ -258,7 +269,7 @@ impl RobotPool {
             let r = run_battle(
                 &slot.server,
                 vec![Entrant::Local(pilot), Entrant::Remote(conn)],
-                vec!["Candidate".into(), b.name.clone()],
+                vec![self.name.clone(), b.name.clone()],
                 &opts,
                 live,
                 &stop,

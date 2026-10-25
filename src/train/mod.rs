@@ -542,6 +542,7 @@ fn start_robots(cfg: &TrainConfig, dirs: &[String], tx: &Sender<Msg>) -> Option<
     let n = bots.len();
     match RobotPool::start(bots, cfg.robot_slots) {
         Ok(p) => {
+            let p = p.named(&cfg.run_name);
             let _ = tx.send(Msg::Log(format!(
                 "Robots: {n} of {} bots running, {} processes, sandbox: {}",
                 cfg.robots.len(),
