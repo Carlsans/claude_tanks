@@ -26,6 +26,16 @@ const MAX_SKIPPED: f64 = 0.1;
 /// in the RoboRumble survey, 16 at once, 2.4 ms (median) and at most 5.7 ms
 /// for the robots training uses.
 const MAX_MS_PER_TURN: f64 = 8.0;
+/// Turns after which a battle is stopped as soon as the bot is too slow,
+/// instead of waiting for its end (one slow battle could hold up training
+/// for minutes).
+const SLOW_CHECK_TURNS: u64 = 500;
+
+/// Whether `turns` turns, `skipped` of them without the bot's intent, in
+/// `seconds`, make the bot too slow to train against.
+fn too_slow(turns: u64, skipped: u64, seconds: f64) -> bool {
+    skipped as f64 > MAX_SKIPPED * turns as f64 || seconds * 1000.0 > MAX_MS_PER_TURN * turns as f64
+}
 /// Memory one bot process may take: the heap `BotDir::launch` allows a JVM,
 /// plus the JVM itself.
 pub const BOT_MEMORY_MB: u64 = 400;
@@ -190,14 +200,12 @@ impl RobotPool {
         self.busy.lock().unwrap()[k] = false;
         self.freed.notify_all();
         let l = live.into_inner().unwrap();
-        let too_slow = l.timeouts as f64 > MAX_SKIPPED * l.turns as f64
-            || seconds * 1000.0 > MAX_MS_PER_TURN * l.turns as f64;
-        match res {
-            Some(_) if too_slow => self.failures[bot].store(MAX_FAILURES, Ordering::Relaxed),
-            Some(_) => self.failures[bot].store(0, Ordering::Relaxed),
-            None => {
-                self.failures[bot].fetch_add(1, Ordering::Relaxed);
-            }
+        if too_slow(l.turns, l.timeouts, seconds) {
+            self.failures[bot].store(MAX_FAILURES, Ordering::Relaxed);
+        } else if res.is_some() {
+            self.failures[bot].store(0, Ordering::Relaxed);
+        } else {
+            self.failures[bot].fetch_add(1, Ordering::Relaxed);
         }
         let mut s = self.stats[bot].lock().unwrap();
         s.battles += 1;
@@ -238,6 +246,12 @@ impl RobotPool {
             s.spawn(|| {
                 while !done.load(Ordering::Relaxed) && t.elapsed() < BATTLE_LIMIT {
                     std::thread::sleep(Duration::from_millis(100));
+                    let l = live.lock().unwrap();
+                    if l.turns >= SLOW_CHECK_TURNS
+                        && too_slow(l.turns, l.timeouts, t.elapsed().as_secs_f64())
+                    {
+                        break;
+                    }
                 }
                 stop.store(true, Ordering::Relaxed);
             });
