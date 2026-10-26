@@ -1,0 +1,9 @@
+[package]
+name = "jvm2rs"
+version = "0.1.0"
+edition = "2024"
+description = "Translates JVM bytecode (class files and jars) into Rust source"
+
+[dependencies]
+jrt = { path = "../jrt" }
+zip = { version = "2", default-features = false, features = ["deflate"] }

@@ -26,3 +26,9 @@ gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 name = "gpu_check"
 harness = false
 required-features = ["gpu"]
+
+# The JVM bytecode translator (jvm2rs) and the runtime its output links
+# against (jrt). Translated robots are built outside this workspace.
+[workspace]
+members = ["jvm/jrt", "jvm/jvm2rs"]
+exclude = ["bots"]
