@@ -6,6 +6,7 @@ pub mod classfile;
 pub mod classpath;
 pub mod codegen;
 pub mod desc;
+pub mod indy;
 pub mod insn;
 pub mod mangle;
 pub mod world;
@@ -34,6 +35,8 @@ pub struct Report {
     /// Unsupported or unresolved things the output throws on, with counts.
     pub notes: BTreeMap<String, usize>,
     pub missing: Vec<String>,
+    /// Java library classes left out (see `world::Policy`) that code refers to.
+    pub excluded: Vec<String>,
 }
 
 pub fn translate(opts: &Options) -> Result<Report, String> {
@@ -41,7 +44,7 @@ pub fn translate(opts: &Options) -> Result<Report, String> {
     for p in &opts.classpath {
         cp.add(p).map_err(|e| e.to_string())?;
     }
-    let mut world = World::new(cp);
+    let mut world = World::new(cp, world::Policy::robots());
     let mut roots = opts.roots.clone();
     if let Some(m) = &opts.main {
         roots.push(Impl {
@@ -101,6 +104,7 @@ pub fn translate(opts: &Options) -> Result<Report, String> {
         methods: reach.methods.len(),
         notes,
         missing: world.missing.iter().cloned().collect(),
+        excluded: world.excluded.iter().cloned().collect(),
     })
 }
 

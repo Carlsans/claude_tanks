@@ -89,3 +89,9 @@ pub fn flush(_this: Ref) -> JResult<()> {
     let _ = std::io::stdout().flush();
     Ok(())
 }
+
+pub fn printf(this: Ref, fmt: Ref, args: Ref) -> JResult<Ref> {
+    let s = crate::n::format::format_str(&fmt, &args)?;
+    emit(&this, &s, false)?;
+    Ok(this)
+}

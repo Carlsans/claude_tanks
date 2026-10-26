@@ -514,6 +514,23 @@ pub fn islot(o: &Rc<Obj>, iface: &'static Class, idx: usize) -> JResult<*const (
     ))
 }
 
+/// Method `idx` of the interface named `iface` on an object (for the
+/// runtime's own calls into translated interfaces).
+pub fn islot_by_name(o: &Rc<Obj>, iface: &str, idx: usize) -> JResult<*const ()> {
+    for (i, t) in o.class.itable {
+        if i.name == iface {
+            let p = t[idx].0;
+            if !p.is_null() {
+                return Ok(p);
+            }
+        }
+    }
+    Err(throw(
+        &C_java_lang_IncompatibleClassChangeError,
+        &format!("{} does not implement {iface}", o.class.name),
+    ))
+}
+
 /// `toString()` of any object, by its method table.
 pub fn call_to_string(o: &Rc<Obj>) -> JResult<Ref> {
     let f: fn(Ref) -> JResult<Ref> = unsafe { std::mem::transmute(vslot(o, 2)?) };
@@ -743,4 +760,83 @@ pub fn run_main(main: fn(Ref) -> JResult<()>) -> i32 {
             1
         }
     }
+}
+
+// ---------------------------------------------------------------- lambdas
+
+/// Appends `String.valueOf(r)` (string concatenation).
+pub fn concat_any(b: &mut Vec<u16>, r: &Ref) -> JResult<()> {
+    b.extend(n::string::value_of_any(r)?);
+    Ok(())
+}
+
+pub fn concat_str(b: &mut Vec<u16>, s: &str) {
+    b.extend(s.encode_utf16());
+}
+
+fn unbox_bits(r: &Ref) -> JResult<(&'static str, u64)> {
+    let o = nn(r)?;
+    Ok((o.class.name, o.prims.first().map_or(0, |c| c.get())))
+}
+
+/// The primitive inside a box, converted as a lambda's arguments are.
+pub fn unbox_i(r: &Ref) -> JResult<i32> {
+    let (c, b) = unbox_bits(r)?;
+    Ok(match c {
+        "java/lang/Boolean" => (b != 0) as i32,
+        "java/lang/Character" => b as u16 as i32,
+        _ => b as i32,
+    })
+}
+
+pub fn unbox_j(r: &Ref) -> JResult<i64> {
+    let (c, b) = unbox_bits(r)?;
+    Ok(match c {
+        "java/lang/Long" => b as i64,
+        "java/lang/Character" => i64::from(b as u16),
+        _ => i64::from(b as i32),
+    })
+}
+
+pub fn unbox_d(r: &Ref) -> JResult<f64> {
+    let (c, b) = unbox_bits(r)?;
+    Ok(match c {
+        "java/lang/Double" => f64::from_bits(b),
+        "java/lang/Float" => f64::from(f32::from_bits(b as u32)),
+        "java/lang/Long" => b as i64 as f64,
+        "java/lang/Character" => f64::from(b as u16),
+        _ => f64::from(b as i32),
+    })
+}
+
+pub fn unbox_f(r: &Ref) -> JResult<f32> {
+    let (c, b) = unbox_bits(r)?;
+    Ok(match c {
+        "java/lang/Float" => f32::from_bits(b as u32),
+        "java/lang/Double" => f64::from_bits(b) as f32,
+        "java/lang/Long" => b as i64 as f32,
+        _ => b as i32 as f32,
+    })
+}
+
+/// Boxes a primitive by its descriptor letter (bytes and shorts as
+/// integers: their boxes are not modelled).
+pub fn box_i(code: u8, v: i32) -> JResult<Ref> {
+    match code {
+        b'Z' => n::boxes::boolean::value_of(v),
+        b'C' => n::boxes::character::value_of(v),
+        _ => n::boxes::integer::value_of(v),
+    }
+}
+
+pub fn box_j(v: i64) -> JResult<Ref> {
+    n::boxes::long::value_of(v)
+}
+
+pub fn box_f(v: f32) -> JResult<Ref> {
+    n::boxes::float::value_of(v)
+}
+
+pub fn box_d(v: f64) -> JResult<Ref> {
+    n::boxes::double::value_of(v)
 }

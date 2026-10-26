@@ -15,6 +15,8 @@ enum Source {
 
 pub struct ClassPath {
     sources: Vec<Source>,
+    /// Which sources are the Java library (JDK jmods), by position.
+    library: Vec<bool>,
     /// Name to the source that defines it, for archives.
     index: HashMap<String, usize>,
 }
@@ -23,6 +25,7 @@ impl ClassPath {
     pub fn new() -> ClassPath {
         ClassPath {
             sources: Vec::new(),
+            library: Vec::new(),
             index: HashMap::new(),
         }
     }
@@ -32,6 +35,7 @@ impl ClassPath {
         let e = |m: String| Error(format!("{}: {m}", path.display()));
         if path.is_dir() {
             self.sources.push(Source::Dir(path.to_path_buf()));
+            self.library.push(false);
             return Ok(());
         }
         let mut bytes = std::fs::read(path).map_err(|x| e(x.to_string()))?;
@@ -57,6 +61,7 @@ impl ClassPath {
             }
         }
         self.sources.push(Source::Zip(zip, prefix));
+        self.library.push(!prefix.is_empty());
         Ok(())
     }
 
@@ -83,6 +88,19 @@ impl ClassPath {
 
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
+    }
+
+    /// Whether a class comes from the Java library (a jmod).
+    pub fn is_library(&self, name: &str) -> bool {
+        let file = format!("{name}.class");
+        self.sources
+            .iter()
+            .enumerate()
+            .position(|(k, s)| match s {
+                Source::Dir(d) => d.join(&file).is_file(),
+                Source::Zip(..) => self.index.get(name) == Some(&k),
+            })
+            .is_some_and(|k| self.library[k])
     }
 
     pub fn load(&mut self, name: &str) -> Result<Option<ClassFile>> {

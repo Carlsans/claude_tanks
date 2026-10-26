@@ -54,3 +54,23 @@ pub fn print_stack_trace(this: Ref) -> JResult<()> {
 pub fn fill_in_stack_trace(this: Ref) -> JResult<Ref> {
     Ok(this)
 }
+
+fn init_text(this: Ref, text: String) -> JResult<()> {
+    init_msg(this, jstr(&text))
+}
+
+pub fn init_ioobe_index(this: Ref, i: i32) -> JResult<()> {
+    init_text(this, format!("Index out of range: {i}"))
+}
+
+pub fn init_ioobe_index_j(this: Ref, i: i64) -> JResult<()> {
+    init_text(this, format!("Index out of range: {i}"))
+}
+
+pub fn init_aioobe_index(this: Ref, i: i32) -> JResult<()> {
+    init_text(this, format!("Array index out of range: {i}"))
+}
+
+pub fn init_sioobe_index(this: Ref, i: i32) -> JResult<()> {
+    init_text(this, format!("String index out of range: {i}"))
+}

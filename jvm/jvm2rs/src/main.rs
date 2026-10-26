@@ -52,6 +52,13 @@ fn main() {
                     r.missing.join(", ")
                 );
             }
+            if !r.excluded.is_empty() {
+                eprintln!(
+                    "library classes left out ({}): {}",
+                    r.excluded.len(),
+                    r.excluded.join(", ")
+                );
+            }
             for (n, c) in &r.notes {
                 eprintln!(
                     "  unsupported: {n}{}",

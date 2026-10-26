@@ -109,3 +109,11 @@ pub fn out() -> JResult<Ref> {
 pub fn err() -> JResult<Ref> {
     Ok(ERR.with(|o| o.clone()))
 }
+
+/// `AccessController.doPrivileged(PrivilegedAction)`: just `run()`.
+pub fn do_privileged(action: Ref) -> JResult<Ref> {
+    let o = nn(&action)?;
+    let f: fn(Ref) -> JResult<Ref> =
+        unsafe { std::mem::transmute(islot_by_name(o, "java/security/PrivilegedAction", 0)?) };
+    f(action)
+}

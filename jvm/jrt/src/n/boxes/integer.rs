@@ -50,6 +50,10 @@ pub fn signum(v: i32) -> JResult<i32> {
 pub fn compare(a: i32, b: i32) -> JResult<i32> {
     Ok((a > b) as i32 - (a < b) as i32)
 }
+pub fn sum(a: i32, b: i32) -> JResult<i32> {
+    Ok(a.wrapping_add(b))
+}
+
 pub fn max(a: i32, b: i32) -> JResult<i32> {
     Ok(a.max(b))
 }

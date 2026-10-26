@@ -101,6 +101,34 @@ const fn exc(name: &'static str, sup: &'static str) -> NativeClass {
     }
 }
 
+const fn index_exc(
+    name: &'static str,
+    sup: &'static str,
+    methods: &'static [NativeMethod],
+) -> NativeClass {
+    NativeClass {
+        methods,
+        ..exc(name, sup)
+    }
+}
+
+const IOOBE_METHODS: &[NativeMethod] = &[
+    d("<init>()V", "init"),
+    d("<init>(Ljava/lang/String;)V", "init_msg"),
+    d("<init>(I)V", "init_ioobe_index"),
+    d("<init>(J)V", "init_ioobe_index_j"),
+];
+const AIOOBE_METHODS: &[NativeMethod] = &[
+    d("<init>()V", "init"),
+    d("<init>(Ljava/lang/String;)V", "init_msg"),
+    d("<init>(I)V", "init_aioobe_index"),
+];
+const SIOOBE_METHODS: &[NativeMethod] = &[
+    d("<init>()V", "init"),
+    d("<init>(Ljava/lang/String;)V", "init_msg"),
+    d("<init>(I)V", "init_sioobe_index"),
+];
+
 const EXC_METHODS: &[NativeMethod] = &[
     d("<init>()V", "init"),
     d("<init>(Ljava/lang/String;)V", "init_msg"),
@@ -141,6 +169,20 @@ pub const OBJECT_SLOTS: [&str; 5] = [
     "clone()Ljava/lang/Object;",
     "finalize()V",
 ];
+
+/// Translated methods replaced by Rust functions (relative to the runtime
+/// crate root): library methods that read memory through `Unsafe`, or
+/// whose translation would drag in too much.
+pub const OVERRIDES: &[(&str, &str, &str)] = &[(
+    "jdk/internal/util/ArraysSupport",
+    "vectorizedMismatch(Ljava/lang/Object;JLjava/lang/Object;JII)I",
+    "n::unsafe_::vectorized_mismatch",
+)];
+
+/// Methods the runtime calls on translated objects (besides Object's), so
+/// translation keeps their implementations: (class or interface, signature).
+pub const CALLBACKS: &[(&str, &str)] =
+    &[("java/security/PrivilegedAction", "run()Ljava/lang/Object;")];
 
 pub const NATIVE_CLASSES: &[NativeClass] = &[
     NativeClass {
@@ -243,10 +285,20 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
             d("toUpperCase()Ljava/lang/String;", "to_upper"),
             d("toCharArray()[C", "to_char_array"),
             d("getChars(II[CI)V", "get_chars"),
+            d("split(Ljava/lang/String;)[Ljava/lang/String;", "split"),
+            d(
+                "split(Ljava/lang/String;I)[Ljava/lang/String;",
+                "split_limit",
+            ),
+            d("matches(Ljava/lang/String;)Z", "matches"),
             d("intern()Ljava/lang/String;", "intern"),
             s(
                 "valueOf(Ljava/lang/Object;)Ljava/lang/String;",
                 "value_of_obj",
+            ),
+            s(
+                "format(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
+                "format",
             ),
             s("valueOf(I)Ljava/lang/String;", "value_of_i"),
             s("valueOf(J)Ljava/lang/String;", "value_of_j"),
@@ -299,6 +351,17 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
             d("getSimpleName()Ljava/lang/String;", "get_simple_name"),
             d("isInstance(Ljava/lang/Object;)Z", "is_instance"),
             d("desiredAssertionStatus()Z", "no"),
+            d("getComponentType()Ljava/lang/Class;", "get_component_type"),
+            d(
+                "getGenericInterfaces()[Ljava/lang/reflect/Type;",
+                "no_types",
+            ),
+            d("getInterfaces()[Ljava/lang/Class;", "no_types"),
+            d("isArray()Z", "is_array"),
+            d("isInterface()Z", "is_interface"),
+            d("isPrimitive()Z", "no"),
+            d("getSuperclass()Ljava/lang/Class;", "get_superclass"),
+            d("isAssignableFrom(Ljava/lang/Class;)Z", "is_assignable_from"),
             v("toString()Ljava/lang/String;", "to_string"),
         ],
         statics: &[],
@@ -394,6 +457,14 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
             v("print(Z)V", "print_z"),
             v("print(C)V", "print_c"),
             v("flush()V", "flush"),
+            v(
+                "printf(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;",
+                "printf",
+            ),
+            v(
+                "format(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;",
+                "printf",
+            ),
         ],
         statics: &[],
     },
@@ -434,6 +505,7 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
             s("bitCount(I)I", "bit_count"),
             s("signum(I)I", "signum"),
             s("compare(II)I", "compare"),
+            s("sum(II)I", "sum"),
             s("max(II)I", "max"),
             s("min(II)I", "min"),
             s("abs(I)I", "abs"),
@@ -557,6 +629,7 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
             d("<init>(Z)V", "init"),
             s("valueOf(Z)Ljava/lang/Boolean;", "value_of"),
             s("parseBoolean(Ljava/lang/String;)Z", "parse"),
+            s("getBoolean(Ljava/lang/String;)Z", "get_boolean"),
             s("toString(Z)Ljava/lang/String;", "to_string_static"),
             d("booleanValue()Z", "boolean_value"),
             v("equals(Ljava/lang/Object;)Z", "equals"),
@@ -669,6 +742,154 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
         ],
         statics: &[],
     },
+    NativeClass {
+        name: "java/util/Random",
+        module: "n::random",
+        sup: Some(OBJECT),
+        interfaces: &["java/io/Serializable"],
+        interface: false,
+        // The seed, whether a second Gaussian is ready, and that Gaussian.
+        prims: 3,
+        refs: 0,
+        ext: "",
+        methods: &[
+            d("<init>()V", "init"),
+            d("<init>(J)V", "init_seed"),
+            v("setSeed(J)V", "set_seed"),
+            v("next(I)I", "next"),
+            v("nextInt()I", "next_int"),
+            v("nextInt(I)I", "next_int_bound"),
+            v("nextInt(II)I", "next_int_range"),
+            v("nextLong()J", "next_long"),
+            v("nextBoolean()Z", "next_boolean"),
+            v("nextFloat()F", "next_float"),
+            v("nextDouble()D", "next_double"),
+            v("nextGaussian()D", "next_gaussian"),
+            v("nextBytes([B)V", "next_bytes"),
+        ],
+        statics: &[],
+    },
+    NativeClass {
+        name: "java/lang/reflect/Array",
+        module: "n::class",
+        sup: Some(OBJECT),
+        interfaces: &[],
+        interface: false,
+        prims: 0,
+        refs: 0,
+        ext: "",
+        methods: &[
+            s(
+                "newInstance(Ljava/lang/Class;I)Ljava/lang/Object;",
+                "array_new_instance",
+            ),
+            s("getLength(Ljava/lang/Object;)I", "array_get_length"),
+        ],
+        statics: &[],
+    },
+    NativeClass {
+        name: "java/security/AccessController",
+        module: "n::system",
+        sup: Some(OBJECT),
+        interfaces: &[],
+        interface: false,
+        prims: 0,
+        refs: 0,
+        ext: "",
+        methods: &[s(
+            "doPrivileged(Ljava/security/PrivilegedAction;)Ljava/lang/Object;",
+            "do_privileged",
+        )],
+        statics: &[],
+    },
+    NativeClass {
+        name: "jdk/internal/misc/Unsafe",
+        module: "n::unsafe_",
+        sup: Some(OBJECT),
+        interfaces: &[],
+        interface: false,
+        prims: 0,
+        refs: 0,
+        ext: "",
+        methods: &[
+            s("getUnsafe()Ljdk/internal/misc/Unsafe;", "get_unsafe"),
+            v("isBigEndian()Z", "is_big_endian"),
+        ],
+        statics: &[
+            NativeField {
+                sig: "ARRAY_BOOLEAN_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_BYTE_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_CHAR_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_SHORT_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_INT_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_LONG_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_FLOAT_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_DOUBLE_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_OBJECT_BASE_OFFSET:I",
+                getter: "base_offset",
+            },
+            NativeField {
+                sig: "ARRAY_BOOLEAN_INDEX_SCALE:I",
+                getter: "scale_1",
+            },
+            NativeField {
+                sig: "ARRAY_BYTE_INDEX_SCALE:I",
+                getter: "scale_1",
+            },
+            NativeField {
+                sig: "ARRAY_CHAR_INDEX_SCALE:I",
+                getter: "scale_2",
+            },
+            NativeField {
+                sig: "ARRAY_SHORT_INDEX_SCALE:I",
+                getter: "scale_2",
+            },
+            NativeField {
+                sig: "ARRAY_INT_INDEX_SCALE:I",
+                getter: "scale_4",
+            },
+            NativeField {
+                sig: "ARRAY_LONG_INDEX_SCALE:I",
+                getter: "scale_8",
+            },
+            NativeField {
+                sig: "ARRAY_FLOAT_INDEX_SCALE:I",
+                getter: "scale_4",
+            },
+            NativeField {
+                sig: "ARRAY_DOUBLE_INDEX_SCALE:I",
+                getter: "scale_8",
+            },
+            NativeField {
+                sig: "ARRAY_OBJECT_INDEX_SCALE:I",
+                getter: "scale_4",
+            },
+        ],
+    },
     exc("java/lang/Exception", "java/lang/Throwable"),
     exc("java/lang/Error", "java/lang/Throwable"),
     exc("java/lang/RuntimeException", "java/lang/Exception"),
@@ -680,17 +901,20 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
         "java/lang/ArithmeticException",
         "java/lang/RuntimeException",
     ),
-    exc(
+    index_exc(
         "java/lang/IndexOutOfBoundsException",
         "java/lang/RuntimeException",
+        IOOBE_METHODS,
     ),
-    exc(
+    index_exc(
         "java/lang/ArrayIndexOutOfBoundsException",
         "java/lang/IndexOutOfBoundsException",
+        AIOOBE_METHODS,
     ),
-    exc(
+    index_exc(
         "java/lang/StringIndexOutOfBoundsException",
         "java/lang/IndexOutOfBoundsException",
+        SIOOBE_METHODS,
     ),
     exc("java/lang/ClassCastException", "java/lang/RuntimeException"),
     exc(
@@ -763,6 +987,8 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
         "java/lang/VirtualMachineError",
     ),
     exc("java/lang/AssertionError", "java/lang/Error"),
+    exc("java/lang/InternalError", "java/lang/VirtualMachineError"),
+    exc("java/lang/SecurityException", "java/lang/RuntimeException"),
     exc("java/io/IOException", "java/lang/Exception"),
     exc("java/io/FileNotFoundException", "java/io/IOException"),
     exc(

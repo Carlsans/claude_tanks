@@ -12,6 +12,23 @@ fn run(cmd: &mut Command) -> (bool, String) {
     (out.status.success(), s)
 }
 
+/// The JDK's class files, so the Java library translates too.
+fn jdk_modules() -> Vec<std::path::PathBuf> {
+    let (_, props) = run(Command::new("java").args(["-XshowSettings:properties", "-version"]));
+    let Some(home) = props
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("java.home = "))
+        .map(|h| Path::new(h.trim()).join("jmods"))
+    else {
+        return Vec::new();
+    };
+    ["java.base.jmod", "java.desktop.jmod"]
+        .iter()
+        .map(|m| home.join(m))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
 #[test]
 fn programs_print_what_the_jvm_prints() {
     if Command::new("javac").arg("-version").output().is_err() {
@@ -40,15 +57,22 @@ fn programs_print_what_the_jvm_prints() {
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "java"))
             .collect();
+        // A `release` file picks the Java version (8 by default).
+        let release = std::fs::read_to_string(dir.join("release"))
+            .map_or("8".to_string(), |r| r.trim().to_string());
         let (ok, msg) = run(Command::new("javac")
-            .args(["--release", "8", "-nowarn", "-d"])
+            .args(["--release", &release, "-nowarn", "-d"])
             .arg(&classes)
             .args(&sources));
         assert!(ok, "{name}: javac failed:\n{msg}");
         let (_, want) = run(Command::new("java").arg("-cp").arg(&classes).arg("Main"));
         let out = tmp.join(&name).join("rs");
         let report = jvm2rs::translate(&jvm2rs::Options {
-            classpath: vec![classes.clone()],
+            classpath: {
+                let mut cp = vec![classes.clone()];
+                cp.extend(jdk_modules());
+                cp
+            },
             roots: Vec::new(),
             instantiated: Vec::new(),
             out_dir: out.clone(),
@@ -57,7 +81,7 @@ fn programs_print_what_the_jvm_prints() {
             main: Some("Main".into()),
         })
         .unwrap_or_else(|e| panic!("{name}: {e}"));
-        for (n, _) in &report.notes {
+        for n in report.notes.keys() {
             eprintln!("{name}: unsupported: {n}");
         }
         let (ok, msg) = run(Command::new(env!("CARGO"))

@@ -375,6 +375,14 @@ struct MethodGen<'a> {
     handlers: &'a [Handler],
     /// Problems worth reporting (unresolved members...).
     pub notes: &'a mut BTreeMap<String, usize>,
+    extras: &'a mut Extras,
+}
+
+/// Code a class's methods add to its module (lambda classes).
+#[derive(Default)]
+pub struct Extras {
+    pub code: String,
+    pub lambdas: usize,
 }
 
 const DISPATCH_BASE: u32 = 1 << 30;
@@ -738,25 +746,29 @@ impl MethodGen<'_> {
                 self.field(*i, matches!(insn, Insn::GetField(_)), pc)
             }
             Insn::Invoke(kind, i) => self.invoke(*kind, *i, pc),
-            Insn::InvokeDynamic(i) => {
-                let (params, ret) = match self.cf.pool.get(*i as usize) {
-                    Some(Const::InvokeDynamic { nat, .. }) => {
-                        let (_, d) = self.cf.name_and_type(*nat).unwrap_or_default();
-                        let (p, r) = desc::method(&d);
-                        (p.len(), r.map(desc::kind))
+            Insn::InvokeDynamic(i) => match crate::indy::parse(self.cf, *i) {
+                crate::indy::Site::Concat(pieces) => self.concat(&pieces, pc),
+                crate::indy::Site::Lambda(l) => self.lambda(&l, pc),
+                crate::indy::Site::Unsupported(why) => {
+                    let (params, ret) = match self.cf.pool.get(*i as usize) {
+                        Some(Const::InvokeDynamic { nat, .. }) => {
+                            let (_, d) = self.cf.name_and_type(*nat).unwrap_or_default();
+                            let (p, r) = desc::method(&d);
+                            (p.len(), r.map(desc::kind))
+                        }
+                        _ => (0, None),
+                    };
+                    for _ in 0..params {
+                        let v = self.pop_val();
+                        self.line(&format!("let _ = {v};"));
                     }
-                    _ => (0, None),
-                };
-                for _ in 0..params {
-                    let v = self.pop_val();
-                    self.line(&format!("let _ = {v};"));
+                    if let Some(k) = ret {
+                        self.push(k);
+                    }
+                    self.note(why.clone());
+                    self.throw(&format!("jrt::unsupported({})", rust_str(&why)), pc);
                 }
-                if let Some(k) = ret {
-                    self.push(k);
-                }
-                self.note("invokedynamic".into());
-                self.throw("jrt::unsupported(\"invokedynamic\")", pc);
-            }
+            },
             Insn::New(i) => {
                 let name = self.cf.class_name(*i).unwrap_or_default();
                 let v = self.push(K::A);
@@ -1177,6 +1189,93 @@ impl MethodGen<'_> {
         }
     }
 
+    /// Java 9+ string concatenation (`StringConcatFactory`).
+    fn concat(&mut self, pieces: &[crate::indy::Piece], pc: u32) {
+        use crate::indy::Piece;
+        let n = pieces
+            .iter()
+            .filter(|p| matches!(p, Piece::Arg(..)))
+            .count();
+        let mut args: Vec<String> = (0..n).map(|_| self.pop_val()).collect();
+        args.reverse();
+        let mut code = String::from("{ let mut b: Vec<u16> = Vec::new(); ");
+        for p in pieces {
+            match p {
+                Piece::Text(t) => {
+                    let l = self.lits.get(t);
+                    write!(code, "b.extend_from_slice({l}); ").unwrap();
+                }
+                Piece::Arg(i, d) => {
+                    let a = &args[*i];
+                    let piece = match d.as_bytes()[0] {
+                        b'Z' => format!(
+                            "jrt::concat_str(&mut b, if {a} != 0 {{ \"true\" }} else {{ \"false\" }}); "
+                        ),
+                        b'C' => format!("b.push({a} as u16); "),
+                        b'J' | b'I' | b'B' | b'S' => {
+                            format!("jrt::concat_str(&mut b, &{a}.to_string()); ")
+                        }
+                        b'F' => {
+                            format!("jrt::concat_str(&mut b, &jrt::fmt::float_to_string({a})); ")
+                        }
+                        b'D' => {
+                            format!("jrt::concat_str(&mut b, &jrt::fmt::double_to_string({a})); ")
+                        }
+                        _ => {
+                            let t = self.tr(&format!("jrt::concat_any(&mut b, &{a})"), pc);
+                            format!("{t}; ")
+                        }
+                    };
+                    code.push_str(&piece);
+                }
+            }
+        }
+        let v = self.push(K::A);
+        write!(code, "{v} = jrt::new_string(b); }}").unwrap();
+        self.line(&code);
+    }
+
+    /// A lambda or method reference: a new instance of a class made for this
+    /// call site, holding the captured values.
+    fn lambda(&mut self, l: &crate::indy::Lambda, pc: u32) {
+        let mut caps: Vec<String> = (0..l.captured.len()).map(|_| self.pop_val()).collect();
+        caps.reverse();
+        let k = self.extras.lambdas;
+        self.extras.lambdas += 1;
+        match lambda_class(self.world, self.reach, &self.cf.name, k, l) {
+            Ok(code) => self.extras.code.push_str(&code),
+            Err(why) => {
+                self.note(why.clone());
+                self.push(K::A);
+                self.throw(&format!("jrt::unsupported({})", rust_str(&why)), pc);
+                return;
+            }
+        }
+        let mut code = format!("{{ let o = jrt::alloc(&LAMBDA_{k}); let r = o.as_ref().unwrap(); ");
+        let (mut pi, mut ri) = (0, 0);
+        for (c, d) in caps.iter().zip(&l.captured) {
+            match desc::kind(d) {
+                K::A => {
+                    write!(code, "*r.refs[{ri}].borrow_mut() = {c}; ").unwrap();
+                    ri += 1;
+                }
+                kd => {
+                    let bits = match kd {
+                        K::I => format!("{c} as i64 as u64"),
+                        K::J => format!("{c} as u64"),
+                        K::F => format!("u64::from({c}.to_bits())"),
+                        _ => format!("{c}.to_bits()"),
+                    };
+                    write!(code, "r.prims[{pi}].set({bits}); ").unwrap();
+                    pi += 1;
+                }
+            }
+        }
+        let v = self.push(K::A);
+        write!(code, "{v} = o; }}").unwrap();
+        self.line(&code);
+    }
+
     fn is_final_class(&mut self, name: &str) -> bool {
         match self.world.class(name).map(|c| &c.source) {
             Some(crate::world::Source::Translated(cf)) => cf.access & access::FINAL != 0,
@@ -1199,6 +1298,7 @@ fn method_fn(
     cf: &ClassFile,
     m: &Method,
     notes: &mut BTreeMap<String, usize>,
+    extras: &mut Extras,
 ) -> String {
     let is_static = m.access & access::STATIC != 0;
     let (params, ret) = desc::method(&m.desc);
@@ -1225,26 +1325,42 @@ fn method_fn(
         m.desc,
         sig_params.join(", ")
     );
-    let body = match &m.code {
-        None => format!(
+    let args: Vec<String> = sig_params
+        .iter()
+        .map(|p| {
+            p.trim_start_matches("mut ")
+                .split(':')
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    let body = match (
+        crate::world::overridden(&cf.name, &sig(&m.name, &m.desc)),
+        &m.code,
+    ) {
+        (Some(rust), _) => format!("    jrt::{rust}({})\n", args.join(", ")),
+        (None, None) => format!(
             "    Err(jrt::unsupported({}))\n",
             rust_str(&format!("native method {}.{}{}", cf.name, m.name, m.desc))
         ),
-        Some(code) => match method_body(world, lits, reach, cf, code, notes, &param_vars) {
-            Ok(b) => b,
-            Err(e) => {
-                notes
-                    .entry(format!(
-                        "untranslatable {}.{}{}: {e}",
-                        cf.name, m.name, m.desc
-                    ))
-                    .or_default();
-                format!(
-                    "    Err(jrt::unsupported({}))\n",
-                    rust_str(&format!("{}.{}{}: {e}", cf.name, m.name, m.desc))
-                )
+        (None, Some(code)) => {
+            match method_body(world, lits, reach, cf, code, notes, &param_vars, extras) {
+                Ok(b) => b,
+                Err(e) => {
+                    notes
+                        .entry(format!(
+                            "untranslatable {}.{}{}: {e}",
+                            cf.name, m.name, m.desc
+                        ))
+                        .or_default();
+                    format!(
+                        "    Err(jrt::unsupported({}))\n",
+                        rust_str(&format!("{}.{}{}: {e}", cf.name, m.name, m.desc))
+                    )
+                }
             }
-        },
+        }
     };
     format!("{header}{body}}}\n\n")
 }
@@ -1257,6 +1373,7 @@ fn method_body(
     code: &crate::classfile::Code,
     notes: &mut BTreeMap<String, usize>,
     params: &BTreeSet<String>,
+    extras: &mut Extras,
 ) -> Result<String, String> {
     let insns = decode(&code.bytes, &cf.pool).map_err(|e| e.0)?;
     let blocks = analyze(cf, &insns, &code.handlers)?;
@@ -1277,6 +1394,7 @@ fn method_body(
         dispatch: Vec::new(),
         handlers: &code.handlers,
         notes,
+        extras,
     };
     let mut arms = String::new();
     for (b, start) in blocks.starts.iter().enumerate() {
@@ -1520,15 +1638,17 @@ pub fn class_module(
         }
     }
     // Methods.
+    let mut extras = Extras::default();
     for m in &cf.methods {
         let imp = Impl {
             class: name.to_string(),
             sig: sig(&m.name, &m.desc),
         };
         if reach.methods.contains(&imp) {
-            out.push_str(&method_fn(world, lits, reach, &cf, m, notes));
+            out.push_str(&method_fn(world, lits, reach, &cf, m, notes, &mut extras));
         }
     }
+    out.push_str(&extras.code);
     out
 }
 
@@ -1546,4 +1666,275 @@ fn enum_values(cf: &ClassFile, reach: &Reach) -> Option<String> {
         .methods
         .contains(&imp)
         .then(|| format!("Some({})", mangle::method("values", &desc)))
+}
+
+/// Converts a value of descriptor `from` to descriptor `to` as the lambda
+/// metafactory does (boxing, unboxing, widening).
+fn adapt(e: &str, from: &str, to: &str) -> String {
+    let (fk, tk) = (desc::kind(from), desc::kind(to));
+    match (fk, tk) {
+        (K::A, K::A) => e.to_string(),
+        (K::A, _) => {
+            let f = match to.as_bytes()[0] {
+                b'J' => "unbox_j",
+                b'F' => "unbox_f",
+                b'D' => "unbox_d",
+                _ => "unbox_i",
+            };
+            format!("jrt::{f}(&{e})?")
+        }
+        (_, K::A) => match from.as_bytes()[0] {
+            b'J' => format!("jrt::box_j({e})?"),
+            b'F' => format!("jrt::box_f({e})?"),
+            b'D' => format!("jrt::box_d({e})?"),
+            c => format!("jrt::box_i(b'{}', {e})?", c as char),
+        },
+        _ if fk == tk => e.to_string(),
+        _ => format!("({e} as {})", rust_ty(tk)),
+    }
+}
+
+/// The class a lambda call site makes: its `Class` static and the function
+/// answering the interface method (one per descriptor, bridges included).
+fn lambda_class(
+    world: &mut World,
+    reach: &Reach,
+    owner: &str,
+    k: usize,
+    l: &crate::indy::Lambda,
+) -> Result<String, String> {
+    if !world.exists(&l.iface) {
+        return Err(format!("lambda of missing interface {}", l.iface));
+    }
+    let t = &l.target;
+    let tsig = sig(&t.name, &t.desc);
+    // How to call the target, given its arguments.
+    let (tparams, tret) = desc::method(&t.desc);
+    let mut targets: Vec<String> = Vec::new();
+    if matches!(l.kind, 5 | 7 | 9) {
+        targets.push(format!("L{};", t.class));
+    }
+    targets.extend(tparams.iter().map(|p| p.to_string()));
+    let tret: Option<String> = if l.kind == 8 {
+        Some(format!("L{};", t.class))
+    } else {
+        tret.map(String::from)
+    };
+    let call = |world: &mut World, args: &[String]| -> Result<String, String> {
+        match l.kind {
+            6 => {
+                let (decl, _) = world
+                    .resolve_method(&t.class, &tsig)
+                    .ok_or(format!("method {}.{tsig}", t.class))?;
+                let imp = Impl {
+                    class: decl.clone(),
+                    sig: tsig.clone(),
+                };
+                if !world.is_native(&decl) && !reach.methods.contains(&imp) {
+                    return Err(format!("untranslated method {}.{tsig}", t.class));
+                }
+                let init = if world.is_native(&decl) {
+                    String::new()
+                } else {
+                    format!("{}::init()?; ", world.module(&decl))
+                };
+                Ok(format!(
+                    "{{ {init}{}({})? }}",
+                    world.fn_path(&imp),
+                    args.join(", ")
+                ))
+            }
+            8 => {
+                let imp = direct_target(world, &t.class, &tsig)
+                    .ok_or(format!("constructor {}.{tsig}", t.class))?;
+                let init = if world.is_native(&t.class) {
+                    String::new()
+                } else {
+                    format!("{}::init()?; ", world.module(&t.class))
+                };
+                let c = world.class_static(&t.class);
+                let mut all = vec!["n.clone()".to_string()];
+                all.extend(args.iter().cloned());
+                Ok(format!(
+                    "{{ {init}let n = jrt::alloc(&{c}); {}({})?; n }}",
+                    world.fn_path(&imp),
+                    all.join(", ")
+                ))
+            }
+            7 => {
+                let imp = direct_target(world, &t.class, &tsig)
+                    .ok_or(format!("method {}.{tsig}", t.class))?;
+                Ok(format!("{}({})?", world.fn_path(&imp), args.join(", ")))
+            }
+            _ => {
+                let fn_ty = desc::fn_type(&t.desc, false);
+                let recv = &args[0];
+                let rest = args[1..].join(", ");
+                let rest = if rest.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {rest}")
+                };
+                let resolved = if l.kind == 9 {
+                    world.resolve_interface_method(&t.class, &tsig)
+                } else {
+                    world.resolve_method(&t.class, &tsig)
+                };
+                let (decl, info) = resolved.ok_or(format!("method {}.{tsig}", t.class))?;
+                if info.access & access::PRIVATE != 0 {
+                    let imp = Impl {
+                        class: decl,
+                        sig: tsig.clone(),
+                    };
+                    return Ok(format!("{}({recv}{rest})?", world.fn_path(&imp)));
+                }
+                let f = if world.is_interface(&decl) {
+                    let idx = world
+                        .interface_methods(&decl)
+                        .iter()
+                        .position(|x| *x == tsig)
+                        .ok_or(format!("method {}.{tsig}", t.class))?;
+                    format!("jrt::islot(&o, &{}, {idx})?", world.class_static(&decl))
+                } else {
+                    let class = if t.class.starts_with('[') {
+                        jrt::spec::OBJECT.to_string()
+                    } else {
+                        t.class.clone()
+                    };
+                    let slot = world
+                        .layout(&class)
+                        .and_then(|lay| lay.vtable.iter().position(|(x, _)| *x == tsig))
+                        .ok_or(format!("method {}.{tsig}", t.class))?;
+                    format!("jrt::vslot(&o, {slot})?")
+                };
+                Ok(format!(
+                    "{{ let rc = {recv}; let o = jrt::nn(&rc)?.clone(); let f: {fn_ty} = unsafe {{ std::mem::transmute({f}) }}; f(Some(o){rest})? }}"
+                ))
+            }
+        }
+    };
+    // One forwarding function per descriptor the interface method answers to.
+    let mut descs = vec![l.sam_desc.clone()];
+    descs.extend(l.bridges.iter().cloned());
+    let mut out = String::new();
+    let mut fns: Vec<(String, String)> = Vec::new();
+    for (j, d) in descs.iter().enumerate() {
+        let (sparams, sret) = desc::method(d);
+        let fname = format!("lambda_{k}_{j}");
+        let mut params = vec!["this: jrt::Ref".to_string()];
+        let mut sources: Vec<(String, String)> = Vec::new();
+        let mut body = String::from("    let me = jrt::nn(&this)?.clone();\n");
+        let (mut pi, mut ri) = (0, 0);
+        for (c, cd) in l.captured.iter().enumerate() {
+            let e = match desc::kind(cd) {
+                K::A => {
+                    ri += 1;
+                    format!("me.refs[{}].borrow().clone()", ri - 1)
+                }
+                K::I => {
+                    pi += 1;
+                    format!("(me.prims[{}].get() as i32)", pi - 1)
+                }
+                K::J => {
+                    pi += 1;
+                    format!("(me.prims[{}].get() as i64)", pi - 1)
+                }
+                K::F => {
+                    pi += 1;
+                    format!("f32::from_bits(me.prims[{}].get() as u32)", pi - 1)
+                }
+                _ => {
+                    pi += 1;
+                    format!("f64::from_bits(me.prims[{}].get())", pi - 1)
+                }
+            };
+            writeln!(body, "    let c{c} = {e};").unwrap();
+            sources.push((format!("c{c}"), cd.clone()));
+        }
+        for (i, p) in sparams.iter().enumerate() {
+            params.push(format!("p{i}: {}", rust_ty(desc::kind(p))));
+            sources.push((format!("p{i}"), p.to_string()));
+        }
+        if sources.len() != targets.len() {
+            return Err(format!("lambda arguments do not match {}.{tsig}", t.class));
+        }
+        let args: Vec<String> = sources
+            .iter()
+            .zip(&targets)
+            .map(|((e, f), to)| adapt(e, f, to))
+            .collect();
+        let c = call(world, &args)?;
+        let ret_ty = sret.map_or("()".to_string(), |r| rust_ty(desc::kind(r)).to_string());
+        match (tret.as_deref(), sret) {
+            (_, None) => writeln!(body, "    let _ = {c};\n    Ok(())").unwrap(),
+            (None, Some(_)) => writeln!(body, "    {c};\n    Ok(None)").unwrap(),
+            (Some(tr), Some(sr)) => {
+                writeln!(body, "    let r = {c};\n    Ok({})", adapt("r", tr, sr)).unwrap()
+            }
+        }
+        writeln!(
+            out,
+            "fn {fname}({}) -> jrt::JResult<{ret_ty}> {{\n{body}}}\n",
+            params.join(", ")
+        )
+        .unwrap();
+        fns.push((format!("{}{d}", l.name), fname));
+    }
+    // The class: Object's methods, the interfaces' methods.
+    let mut ifaces = vec![l.iface.clone()];
+    world.collect_interfaces(&l.iface, false, &mut ifaces);
+    for m in &l.markers {
+        if world.exists(m) && !ifaces.contains(m) {
+            ifaces.push(m.clone());
+        }
+    }
+    let mut itable = Vec::new();
+    for i in &ifaces {
+        let mut entries = Vec::new();
+        for ms in world.interface_methods(i) {
+            let e = match fns.iter().find(|(s, _)| *s == ms) {
+                Some((_, f)) => format!("jrt::Fp({f} as *const ())"),
+                None => {
+                    let imp = Impl {
+                        class: i.clone(),
+                        sig: ms.clone(),
+                    };
+                    if world.declared(i, &ms).is_some_and(|m| m.concrete)
+                        && reach.methods.contains(&imp)
+                    {
+                        format!("jrt::Fp({} as *const ())", world.fn_path(&imp))
+                    } else {
+                        "jrt::Fp(std::ptr::null())".to_string()
+                    }
+                }
+            };
+            entries.push(e);
+        }
+        itable.push(format!(
+            "(&{}, &[{}])",
+            world.class_static(i),
+            entries.join(", ")
+        ));
+    }
+    let (mut prims, mut refs) = (0, 0);
+    for d in &l.captured {
+        if desc::kind(d) == K::A {
+            refs += 1;
+        } else {
+            prims += 1;
+        }
+    }
+    let if_list: Vec<String> = ifaces
+        .iter()
+        .map(|i| format!("&{}", world.class_static(i)))
+        .collect();
+    writeln!(
+        out,
+        "pub static LAMBDA_{k}: jrt::Class = jrt::Class {{\n    name: {},\n    sup: Some(&jrt::C_java_lang_Object),\n    ifaces: &[{}],\n    interface: false,\n    prims: {prims},\n    refs: {refs},\n    vtable: &jrt::OBJECT_VTABLE,\n    itable: &[{}],\n    ext: None,\n    component: jrt::Component::None,\n    values: None,\n}};\n",
+        rust_str(&format!("{owner}$$Lambda${k}")),
+        if_list.join(", "),
+        itable.join(", ")
+    )
+    .unwrap();
+    Ok(out)
 }

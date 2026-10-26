@@ -66,21 +66,111 @@ pub fn split_sig(sig: &str) -> (&str, &str) {
     (&sig[..i], &sig[i..])
 }
 
+/// Which Java library classes to translate. The library's internals are
+/// entangled (locales, formatters, class loading, `Unsafe`); robots need its
+/// collections and geometry. Classes outside are left out: code that
+/// reaches them throws at run time.
+pub struct Policy {
+    /// Packages whose own classes (not subpackages') are translated.
+    pub packages: Vec<String>,
+    /// Single classes (with their nested classes) translated too.
+    pub classes: Vec<String>,
+    /// Classes left out although their package is in.
+    pub deny: Vec<String>,
+}
+
+impl Policy {
+    pub fn robots() -> Policy {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect();
+        Policy {
+            packages: v(&[
+                "java/util/",
+                "java/util/function/",
+                "java/awt/geom/",
+                "jdk/internal/util/",
+            ]),
+            classes: v(&[
+                "java/lang/Iterable",
+                "java/lang/AutoCloseable",
+                "java/awt/Shape",
+                "java/security/PrivilegedAction",
+                "sun/security/action/GetBooleanAction",
+                "sun/security/action/GetPropertyAction",
+            ]),
+            deny: v(&[
+                "java/util/Formatter",
+                "java/util/Locale",
+                "java/util/ResourceBundle",
+                "java/util/ListResourceBundle",
+                "java/util/PropertyResourceBundle",
+                "java/util/Scanner",
+                "java/util/Calendar",
+                "java/util/GregorianCalendar",
+                "java/util/JapaneseImperialCalendar",
+                "java/util/Date",
+                "java/util/TimeZone",
+                "java/util/SimpleTimeZone",
+                "java/util/ServiceLoader",
+                "java/util/Currency",
+                "java/util/Properties",
+                "java/util/Timer",
+                "java/util/TimerTask",
+                "java/util/UUID",
+                "java/util/Random",
+                "java/util/SplittableRandom",
+                "java/util/Base64",
+                "java/util/HexFormat",
+                "java/util/Spliterators",
+                "java/util/StringJoiner",
+                "java/util/Tripwire",
+                "java/util/ImmutableCollections",
+                "jdk/internal/util/SystemProps",
+                "jdk/internal/util/StaticProperty",
+            ]),
+        }
+    }
+
+    fn matches(list: &[String], name: &str) -> bool {
+        list.iter().any(|c| {
+            name == c
+                || name
+                    .strip_prefix(c.as_str())
+                    .is_some_and(|r| r.starts_with('$'))
+        })
+    }
+
+    pub fn allows(&self, name: &str) -> bool {
+        if Self::matches(&self.deny, name) {
+            return false;
+        }
+        Self::matches(&self.classes, name)
+            || self.packages.iter().any(|p| {
+                name.strip_prefix(p.as_str())
+                    .is_some_and(|r| !r.contains('/'))
+            })
+    }
+}
+
 pub struct World {
     pub cp: ClassPath,
+    pub policy: Policy,
     classes: HashMap<String, Option<Class>>,
     layouts: HashMap<String, Layout>,
     /// Classes that were referenced but found nowhere.
     pub missing: BTreeSet<String>,
+    /// Library classes left out by the policy.
+    pub excluded: BTreeSet<String>,
 }
 
 impl World {
-    pub fn new(cp: ClassPath) -> World {
+    pub fn new(cp: ClassPath, policy: Policy) -> World {
         World {
             cp,
+            policy,
             classes: HashMap::new(),
             layouts: HashMap::new(),
             missing: BTreeSet::new(),
+            excluded: BTreeSet::new(),
         }
     }
 
@@ -88,7 +178,7 @@ impl World {
     pub fn class(&mut self, name: &str) -> Option<&Class> {
         if !self.classes.contains_key(name) {
             let c = self.load(name);
-            if c.is_none() {
+            if c.is_none() && !self.excluded.contains(name) && !name.starts_with('[') {
                 self.missing.insert(name.to_string());
             }
             self.classes.insert(name.to_string(), c);
@@ -107,6 +197,10 @@ impl World {
             });
         }
         if name.starts_with('[') {
+            return None;
+        }
+        if self.cp.is_library(name) && !self.policy.allows(name) {
+            self.excluded.insert(name.to_string());
             return None;
         }
         match self.cp.load(name) {
@@ -510,6 +604,11 @@ impl Reach {
         for s in &spec::OBJECT_SLOTS[..3] {
             r.vcall(world, spec::OBJECT, s);
         }
+        for (c, s) in spec::CALLBACKS {
+            if world.exists(c) {
+                r.vcall(world, c, s);
+            }
+        }
         for c in instantiated {
             r.instantiate(world, c);
         }
@@ -624,6 +723,9 @@ impl Reach {
     }
 
     fn scan(&mut self, world: &mut World, m: &Impl) {
+        if overridden(&m.class, &m.sig).is_some() {
+            return;
+        }
         let (name, d) = split_sig(&m.sig);
         let Some(Source::Translated(cf)) = world.class(&m.class).map(|c| &c.source) else {
             return;
@@ -671,7 +773,10 @@ impl Reach {
                     }
                 }
                 Insn::Invoke(kind, i) => {
-                    let Ok(r) = cf.member(i) else { continue };
+                    let Ok(mut r) = cf.member(i) else { continue };
+                    if r.class.starts_with('[') {
+                        r.class = spec::OBJECT.to_string();
+                    }
                     let s = sig(&r.name, &r.desc);
                     let resolved = if kind == Invoke::Interface {
                         world.resolve_interface_method(&r.class, &s)
@@ -703,14 +808,24 @@ impl Reach {
                             }
                         }
                         Invoke::Virtual | Invoke::Interface => {
-                            if info.access & access::PRIVATE != 0 {
-                                self.add(
-                                    world,
-                                    Impl {
-                                        class: decl,
-                                        sig: s,
-                                    },
-                                );
+                            // Private and final methods are called directly,
+                            // as the generated code does.
+                            let final_class = matches!(
+                                world.class(&decl).map(|c| &c.source),
+                                Some(Source::Translated(cf)) if cf.access & access::FINAL != 0
+                            );
+                            let direct =
+                                info.access & (access::PRIVATE | access::FINAL) != 0 || final_class;
+                            if direct {
+                                if info.concrete {
+                                    self.add(
+                                        world,
+                                        Impl {
+                                            class: decl,
+                                            sig: s,
+                                        },
+                                    );
+                                }
                             } else {
                                 self.use_class(world, &decl);
                                 self.vcall(world, &decl, &s);
@@ -731,11 +846,88 @@ impl Reach {
                         self.use_class(world, &c);
                     }
                 }
-                Insn::InvokeDynamic(_) => self.unresolved(format!("invokedynamic in {cf_name}")),
+                Insn::InvokeDynamic(i) => match crate::indy::parse(&cf, i) {
+                    crate::indy::Site::Concat(_) => {}
+                    crate::indy::Site::Lambda(l) => self.lambda(world, &l),
+                    crate::indy::Site::Unsupported(w) => {
+                        self.unresolved(format!("{w} in {cf_name}"))
+                    }
+                },
                 _ => {}
             }
         }
         let _ = cf_name;
+    }
+}
+
+impl Reach {
+    /// What a lambda class keeps alive: its interfaces' default methods and
+    /// its target.
+    fn lambda(&mut self, world: &mut World, l: &crate::indy::Lambda) {
+        let mut ifaces = vec![l.iface.clone()];
+        world.collect_interfaces(&l.iface, false, &mut ifaces);
+        ifaces.extend(l.markers.iter().cloned());
+        for i in &ifaces {
+            self.use_class(world, i);
+            for s in world.interface_methods(i) {
+                if world.declared(i, &s).is_some_and(|m| m.concrete) {
+                    self.add(
+                        world,
+                        Impl {
+                            class: i.clone(),
+                            sig: s,
+                        },
+                    );
+                }
+            }
+        }
+        let t = &l.target;
+        let s = sig(&t.name, &t.desc);
+        match l.kind {
+            6 => match world.resolve_method(&t.class, &s) {
+                Some((decl, _)) => {
+                    self.init(world, &decl);
+                    self.add(
+                        world,
+                        Impl {
+                            class: decl,
+                            sig: s,
+                        },
+                    );
+                }
+                None => self.unresolved(format!("method {}.{s}", t.class)),
+            },
+            7 | 8 => {
+                if l.kind == 8 {
+                    self.instantiate(world, &t.class);
+                }
+                match direct_target(world, &t.class, &s) {
+                    Some(imp) => self.add(world, imp),
+                    None => self.unresolved(format!("method {}.{s}", t.class)),
+                }
+            }
+            _ => {
+                let r = if l.kind == 9 {
+                    world.resolve_interface_method(&t.class, &s)
+                } else {
+                    world.resolve_method(&t.class, &s)
+                };
+                match r {
+                    Some((decl, m)) if m.access & access::PRIVATE != 0 => self.add(
+                        world,
+                        Impl {
+                            class: decl,
+                            sig: s,
+                        },
+                    ),
+                    Some((decl, _)) => {
+                        self.use_class(world, &decl);
+                        self.vcall(world, &decl, &s);
+                    }
+                    None => self.unresolved(format!("method {}.{s}", t.class)),
+                }
+            }
+        }
     }
 }
 
@@ -765,4 +957,12 @@ pub fn direct_target(world: &mut World, class: &str, sig: &str) -> Option<Impl> 
             class: k,
             sig: sig.to_string(),
         })
+}
+
+/// The Rust function replacing a translated method, if any (`jrt::spec::OVERRIDES`).
+pub fn overridden(class: &str, sig: &str) -> Option<&'static str> {
+    spec::OVERRIDES
+        .iter()
+        .find(|(c, s, _)| *c == class && *s == sig)
+        .map(|(_, _, r)| *r)
 }

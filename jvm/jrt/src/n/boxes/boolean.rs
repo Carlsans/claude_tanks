@@ -54,3 +54,8 @@ pub fn equals(this: Ref, o: Ref) -> JResult<i32> {
 pub fn compare_to(this: Ref, o: Ref) -> JResult<i32> {
     Ok(get(&this)? - get(&o)?)
 }
+
+/// System properties are all unset.
+pub fn get_boolean(_name: Ref) -> JResult<i32> {
+    Ok(0)
+}

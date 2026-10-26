@@ -339,3 +339,87 @@ pub fn value_of_chars_range(a: Ref, off: i32, n: i32) -> JResult<Ref> {
     init_chars_range(s.clone(), a, off, n)?;
     Ok(s)
 }
+
+pub fn format(fmt: Ref, args: Ref) -> JResult<Ref> {
+    Ok(jstr(&crate::n::format::format_str(&fmt, &args)?))
+}
+
+/// What `split` can do without a regular-expression engine: a literal
+/// separator (Java's own fast path: one character, or a backslash and a
+/// non-alphanumeric character), `\s+`, `\s*,\s*`-style trims are not
+/// covered and split on the literal text instead.
+enum Sep {
+    Literal(Vec<u16>),
+    Whitespace,
+}
+
+fn separator(p: &[u16]) -> Sep {
+    let s = String::from_utf16_lossy(p);
+    match s.as_str() {
+        "\\s+" | "\\s" | " +" => Sep::Whitespace,
+        _ => {
+            if let Some(rest) = s.strip_prefix('\\')
+                && rest.chars().count() == 1
+            {
+                return Sep::Literal(rest.encode_utf16().collect());
+            }
+            if s.len() == 3 && s.starts_with('[') && s.ends_with(']') {
+                return Sep::Literal(s[1..2].encode_utf16().collect());
+            }
+            Sep::Literal(p.to_vec())
+        }
+    }
+}
+
+fn split_parts(a: &[u16], sep: &Sep, limit: i32) -> Vec<Vec<u16>> {
+    let mut parts: Vec<Vec<u16>> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < a.len() {
+        if limit > 0 && parts.len() as i32 == limit - 1 {
+            break;
+        }
+        let len = match sep {
+            Sep::Literal(l) if !l.is_empty() && a[i..].starts_with(l) => l.len(),
+            Sep::Whitespace if a[i] <= 32 => a[i..].iter().take_while(|&&c| c <= 32).count(),
+            _ => 0,
+        };
+        if len > 0 {
+            // A match at the very start yields no leading empty string only
+            // when it is zero-width (Java 8+); ours never are.
+            parts.push(a[start..i].to_vec());
+            i += len;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    parts.push(a[start..].to_vec());
+    if limit == 0 {
+        while parts.len() > 1 && parts.last().is_some_and(|p| p.is_empty()) {
+            parts.pop();
+        }
+        if parts.len() == 1 && parts[0].is_empty() && !a.is_empty() {
+            parts.clear();
+        }
+    }
+    parts
+}
+
+pub fn split_limit(this: Ref, regex: Ref, limit: i32) -> JResult<Ref> {
+    let parts = split_parts(of(&this)?, &separator(of(&regex)?), limit);
+    let arr = anewarray(&C_java_lang_String, parts.len() as i32)?;
+    for (i, p) in parts.into_iter().enumerate() {
+        ast_a(&arr, i as i32, new_string(p))?;
+    }
+    Ok(arr)
+}
+
+pub fn split(this: Ref, regex: Ref) -> JResult<Ref> {
+    split_limit(this, regex, 0)
+}
+
+/// `matches` without regular expressions: literal equality.
+pub fn matches(this: Ref, regex: Ref) -> JResult<i32> {
+    Ok((of(&this)? == of(&regex)?) as i32)
+}
