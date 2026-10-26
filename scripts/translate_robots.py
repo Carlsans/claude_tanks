@@ -199,7 +199,7 @@ def generate(out, batches, jrt):
           f'jrt = {{ path = "{jrt}" }}\njcommon = {{ path = "../jcommon" }}\ntungstenite = "0.30"\nmimalloc = "0.1"\n' + "\n".join(deps) + "\n")
     write(os.path.join(out, "Cargo.toml"),
           "[workspace]\nresolver = \"2\"\nmembers = [" + ", ".join(f'"{m}"' for m in members) + "]\n\n"
-          "[profile.release]\ndebug = false\nincremental = false\n")
+          "[profile.release]\ndebug = false\nincremental = false\npanic = \"abort\"\nlto = \"thin\"\n")
 
 
 def build(out, jobs):
