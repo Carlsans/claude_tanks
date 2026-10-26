@@ -14,5 +14,6 @@ pub mod print;
 pub mod random;
 pub mod string;
 pub mod system;
+pub mod thread;
 pub mod throwable;
 pub mod unsafe_;

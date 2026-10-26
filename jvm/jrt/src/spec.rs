@@ -181,8 +181,11 @@ pub const OVERRIDES: &[(&str, &str, &str)] = &[(
 
 /// Methods the runtime calls on translated objects (besides Object's), so
 /// translation keeps their implementations: (class or interface, signature).
-pub const CALLBACKS: &[(&str, &str)] =
-    &[("java/security/PrivilegedAction", "run()Ljava/lang/Object;")];
+pub const CALLBACKS: &[(&str, &str)] = &[
+    ("java/security/PrivilegedAction", "run()Ljava/lang/Object;"),
+    ("java/lang/Thread", "run()V"),
+    ("java/lang/Runnable", "run()V"),
+];
 
 pub const NATIVE_CLASSES: &[NativeClass] = &[
     NativeClass {
@@ -202,10 +205,11 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
             v("clone()Ljava/lang/Object;", "clone"),
             v("finalize()V", "finalize"),
             d("getClass()Ljava/lang/Class;", "get_class"),
-            d("notify()V", "nop"),
-            d("notifyAll()V", "nop"),
-            d("wait()V", "nop"),
+            d("notify()V", "notify"),
+            d("notifyAll()V", "notify_all"),
+            d("wait()V", "wait"),
             d("wait(J)V", "wait_j"),
+            d("wait(JI)V", "wait_j_nanos"),
         ],
         statics: &[],
     },
@@ -766,6 +770,60 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
             v("nextDouble()D", "next_double"),
             v("nextGaussian()D", "next_gaussian"),
             v("nextBytes([B)V", "next_bytes"),
+        ],
+        statics: &[],
+    },
+    NativeClass {
+        name: "java/lang/Thread",
+        module: "n::thread",
+        sup: Some(OBJECT),
+        interfaces: &["java/lang/Runnable"],
+        interface: false,
+        // The scheduler id + 1, daemon, priority; the name, the target.
+        prims: 3,
+        refs: 2,
+        ext: "",
+        methods: &[
+            v("run()V", "run"),
+            v("start()V", "start"),
+            v("toString()Ljava/lang/String;", "to_string"),
+            d("<init>()V", "init"),
+            d("<init>(Ljava/lang/Runnable;)V", "init_target"),
+            d("<init>(Ljava/lang/String;)V", "init_name"),
+            d(
+                "<init>(Ljava/lang/Runnable;Ljava/lang/String;)V",
+                "init_target_name",
+            ),
+            d(
+                "<init>(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;)V",
+                "init_group_target",
+            ),
+            d(
+                "<init>(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;Ljava/lang/String;)V",
+                "init_group_target_name",
+            ),
+            s("currentThread()Ljava/lang/Thread;", "current_thread"),
+            s("sleep(J)V", "sleep"),
+            s("sleep(JI)V", "sleep_nanos"),
+            s("yield()V", "yield_now"),
+            s("onSpinWait()V", "spin_wait"),
+            s("interrupted()Z", "interrupted"),
+            d("interrupt()V", "interrupt"),
+            d("isInterrupted()Z", "is_interrupted"),
+            d("isAlive()Z", "is_alive"),
+            d("join()V", "join"),
+            d("join(J)V", "join_ms"),
+            d("getName()Ljava/lang/String;", "get_name"),
+            d("setName(Ljava/lang/String;)V", "set_name"),
+            d("setDaemon(Z)V", "set_daemon"),
+            d("isDaemon()Z", "is_daemon"),
+            d("setPriority(I)V", "set_priority"),
+            d("getPriority()I", "get_priority"),
+            d("getId()J", "get_id"),
+            d(
+                "setUncaughtExceptionHandler(Ljava/lang/Thread$UncaughtExceptionHandler;)V",
+                "ignore_ref",
+            ),
         ],
         statics: &[],
     },

@@ -5,3 +5,4 @@ edition = "2024"
 description = "Runtime for JVM bytecode translated to Rust by jvm2rs"
 
 [dependencies]
+corosensei = "0.3"

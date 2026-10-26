@@ -13,6 +13,7 @@
 pub mod fmt;
 pub mod n;
 pub mod spec;
+pub mod thread;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -747,13 +748,17 @@ pub fn printing() -> bool {
     PRINT.with(|p| p.get())
 }
 
-/// Runs a translated `main(String[])` and reports an uncaught exception as
-/// the JVM does. Returns the exit status.
+/// Runs a translated `main(String[])` as the main thread (and the threads
+/// it starts) and reports an uncaught exception as the JVM does. Returns the
+/// exit status.
 pub fn run_main(main: fn(Ref) -> JResult<()>) -> i32 {
-    let args = anewarray(&C_java_lang_String, 0).ok().flatten();
-    match main(args) {
-        Ok(()) => 0,
-        Err(t) => {
+    let failed = thread::run_main_thread(Box::new(move || {
+        let args = anewarray(&C_java_lang_String, 0)?;
+        main(args)
+    }));
+    match failed {
+        None => 0,
+        Some(t) => {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             eprintln!("Exception in thread \"main\" {}", describe(&t));
