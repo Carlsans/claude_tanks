@@ -24,6 +24,8 @@
 | M2 | Battle statistics as inputs (rounds won, both hit rates, damage balance, guess factors; `gru_mem`) let training find when to close in on a weak or evasive opponent | As M0 with the `gru_mem` architecture (RC4b latest copied in, new inputs starting at zero weight) | same, in parallel |
 | M3 | Both together | `gru_mem` with `keep_state=true` | same, in parallel |
 | M0b, M2b, M3b | After 300 generations the memory weights were still small (see below): more training lets M2 and M3 use them | M0, M2 and M3 continued from their latest networks, with a new robot order (`seed=1`). M1 dropped | 600 more generations, 3 runs in parallel |
+| S1 | Against robots that shoot poorly, training alone finds that closing in pays (we still lose 29% of rounds to them, hitting 19% of our shots from 288 units) | M0 recipe from M0 ema, but only the weakest-shooting third of the training robots (262, by damage per turn against the old champion in the [survey](survey.md)). No reward for distance | 300 generations, in parallel with the above |
+| MoE1 | A gate on the battle memory learns when to switch to the specialist, so the tank closes in only on weak opponents | Mixture of experts (`moe`): M0b ema (all robots) and S1 (weak shooters), gate starting even. M0 recipe on all training robots | 300 generations, after S1 and M0b |
 
 ## Results
 
