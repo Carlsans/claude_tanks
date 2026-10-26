@@ -596,6 +596,23 @@ impl BotDir {
         v
     }
 
+    /// Memory its process may take, in MB: a JVM's, unless it is a robot
+    /// translated to Rust (its script runs `rumble-robots`).
+    pub fn memory_mb(&self) -> u64 {
+        let base = self
+            .dir
+            .file_name()
+            .map(|b| b.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let script =
+            std::fs::read_to_string(self.dir.join(format!("{base}.sh"))).unwrap_or_default();
+        if script.contains("rumble-robots") {
+            crate::royale::pool::NATIVE_BOT_MEMORY_MB
+        } else {
+            crate::royale::pool::BOT_MEMORY_MB
+        }
+    }
+
     /// Starts the bot as the official booter would: its script if there is
     /// one, else `java -cp ../lib/* <base>.java` or `python3 <base>.py`.
     pub fn launch(&self, server_url: &str) -> std::io::Result<Child> {

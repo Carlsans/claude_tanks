@@ -214,8 +214,35 @@ fn is_enum(c: &Class) -> bool {
     c.values.is_some() || c.sup.is_some_and(|s| s.name == "java/lang/Enum")
 }
 
-/// The enum constant whose `value` field (or name) is `s`.
+thread_local! {
+    /// Enum constants by class and JSON text, and classes' instance fields.
+    static ENUMS: RefCell<HashMap<(usize, String), Ref>> = RefCell::new(HashMap::new());
+    static FIELDS: RefCell<HashMap<usize, Rc<Vec<&'static reflect::FieldMeta>>>> = RefCell::new(HashMap::new());
+}
+
+fn fields_of(c: &'static Class) -> Rc<Vec<&'static reflect::FieldMeta>> {
+    let key = c as *const Class as usize;
+    FIELDS.with(|f| {
+        f.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| Rc::new(reflect::instance_fields(c)))
+            .clone()
+    })
+}
+
+/// The enum constant whose `value` field (or name) is `s` (cached: enum
+/// constants never change).
 fn enum_constant(c: &'static Class, s: &str) -> JResult<Ref> {
+    let key = (c as *const Class as usize, s.to_string());
+    if let Some(e) = ENUMS.with(|m| m.borrow().get(&key).cloned()) {
+        return Ok(e);
+    }
+    let e = find_enum_constant(c, s)?;
+    ENUMS.with(|m| m.borrow_mut().insert(key, e.clone()));
+    Ok(e)
+}
+
+fn find_enum_constant(c: &'static Class, s: &str) -> JResult<Ref> {
     let Some(values) = c.values else {
         return Err(err(&format!("{} has no values()", c.name)));
     };
@@ -255,7 +282,7 @@ fn object(v: &J, declared: &'static Class) -> JResult<Ref> {
         alloc(c)
     };
     let obj = nn(&o)?.clone();
-    for f in reflect::instance_fields(c) {
+    for f in fields_of(c).iter() {
         if let Some(x) = v.get(f.name) {
             reflect::set(&obj, f, decode(x, f.desc, f.generic)?);
         }
@@ -310,7 +337,7 @@ fn encode(r: &Ref) -> JResult<J> {
             }
             _ => {
                 let mut m = serde_json::Map::new();
-                for f in reflect::instance_fields(o.class) {
+                for f in fields_of(o.class).iter() {
                     let v = match f.desc.as_bytes()[0] {
                         b'L' | b'[' => encode(&reflect::get(o, f).a())?,
                         b'Z' => J::Bool(reflect::get(o, f).i() != 0),
@@ -396,10 +423,86 @@ pub fn from_string(text: Ref, class: Ref) -> JResult<Ref> {
     object(&v, c)
 }
 
-/// `JsonConverter.fromJson(JsonObject, Class)`: via the tree's text.
+/// `JsonConverter.fromJson(JsonObject, Class)`: from the value `ws_on_text`
+/// decoded, or else via the tree's text.
 pub fn from_tree(tree: Ref, class: Ref) -> JResult<Ref> {
+    if let Some(o) = &tree
+        && let Ext::Any(a) = &o.ext
+        && let Some(v) = a.borrow().downcast_ref::<J>()
+    {
+        let c = class_of(&class)?;
+        return if is_gson_tree(c) {
+            gson_tree(v)
+        } else {
+            object(v, c)
+        };
+    }
     let text = call_to_string(nn(&tree)?)?;
     from_string(text, class)
+}
+
+/// The bot API's handler for each message type (`WebSocketHandler`).
+const HANDLERS: &[(&str, &str)] = &[
+    (
+        "TickEventForBot",
+        "handleTick(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "RoundStartedEvent",
+        "handleRoundStarted(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "RoundEndedEventForBot",
+        "handleRoundEnded(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "GameStartedEventForBot",
+        "handleGameStarted(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "GameEndedEventForBot",
+        "handleGameEnded(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "SkippedTurnEvent",
+        "handleSkippedTurn(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "ServerHandshake",
+        "handleServerHandshake(Lcom/google/gson/JsonObject;)V",
+    ),
+];
+
+/// `WebSocketHandler.onText`: decodes the message once (no gson tree) and
+/// calls the bot API's handler for its type, with a stand-in for the
+/// `JsonObject` that `from_tree` reads the value from.
+pub fn ws_on_text(this: Ref, _ws: Ref, data: Ref, _last: i32) -> JResult<Ref> {
+    let text = String::from_utf16_lossy(&n::string::seq_chars(&data)?);
+    let v: J = serde_json::from_str(&text).map_err(|e| err(&e.to_string()))?;
+    let ty = v
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+    let class = nn(&this)?.class;
+    if ty == "GameAbortedEvent" {
+        reflect::call(class, "handleGameAborted()V", &[Val::A(this)])?;
+        return Ok(None);
+    }
+    if let Some((_, sig)) = HANDLERS.iter().find(|(t, _)| *t == ty) {
+        let holder = alloc(&C_jrt_JsonValue);
+        if let Some(o) = &holder
+            && let Ext::Any(a) = &o.ext
+        {
+            *a.borrow_mut() = Box::new(v);
+        }
+        reflect::call(class, sig, &[Val::A(this), Val::A(holder)])?;
+    }
+    Ok(None)
+}
+
+pub fn value_ext() -> Ext {
+    Ext::Any(RefCell::new(Box::new(J::Null)))
 }
 
 /// `JsonConverter.toJson(Object)`.

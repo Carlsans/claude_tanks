@@ -11,7 +11,7 @@ pub mod ppo;
 use crate::bots::scripted::{ACE, LEVELS, MAX_LEVEL, VETERAN};
 use crate::nn::{Arch, Brain, Genes, ModelFile, models_dir};
 use crate::rng::Rng;
-use crate::royale::pool::{BOT_MEMORY_MB, BotStats, RobotPool, available_memory_mb};
+use crate::royale::pool::{BotStats, RobotPool, available_memory_mb};
 use crate::royale::server::{BotDir, sandbox_name};
 use crate::royale::sparring::Sparring;
 use crate::sim::Rules;
@@ -530,8 +530,17 @@ fn start_robots(cfg: &TrainConfig, dirs: &[String], tx: &Sender<Msg>) -> Option<
     // Swapping slows everything down, training included: keep the bots to
     // three quarters of the free memory.
     if let Some(free) = available_memory_mb() {
-        let fit = (free * 3 / 4 / (cfg.robot_slots.max(1) as u64 * BOT_MEMORY_MB)).max(1);
-        if (fit as usize) < bots.len() {
+        let budget = free * 3 / 4;
+        let mut used = 0;
+        let fit = bots
+            .iter()
+            .take_while(|b| {
+                used += cfg.robot_slots.max(1) as u64 * b.memory_mb();
+                used <= budget
+            })
+            .count()
+            .max(1);
+        if fit < bots.len() {
             let _ = tx.send(Msg::Log(format!(
                 "Robots: only {fit} of {} fit in the {free} MB of free memory",
                 bots.len()

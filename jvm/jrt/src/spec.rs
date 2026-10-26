@@ -237,6 +237,11 @@ pub const OVERRIDES: &[(&str, &str, &str)] = &[
         "getLocalCountryCode()Ljava/lang/String;",
         "n::system::null_static",
     ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "onText(Ljava/net/http/WebSocket;Ljava/lang/CharSequence;Z)Ljava/util/concurrent/CompletionStage;",
+        "n::json::ws_on_text",
+    ),
 ];
 
 /// Packages of classes the runtime creates from JSON (`n::json`): all their
@@ -308,6 +313,38 @@ pub const REFLECTED: &[(&str, &str)] = &[
     (
         "java/util/regex/Matcher",
         "replaceFirst(Ljava/lang/String;)Ljava/lang/String;",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleTick(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleRoundStarted(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleRoundEnded(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleGameStarted(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleGameEnded(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleSkippedTurn(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleServerHandshake(Lcom/google/gson/JsonObject;)V",
+    ),
+    (
+        "dev/robocode/tankroyale/botapi/internal/WebSocketHandler",
+        "handleGameAborted()V",
     ),
 ];
 
@@ -1775,6 +1812,18 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
                 "alpha_composite_alpha",
             ),
         ],
+        statics: &[],
+    },
+    NativeClass {
+        name: "jrt/JsonValue",
+        module: "n::json",
+        sup: Some(OBJECT),
+        interfaces: &[],
+        interface: false,
+        prims: 0,
+        refs: 0,
+        ext: "value_ext",
+        methods: &[],
         statics: &[],
     },
     NativeClass {

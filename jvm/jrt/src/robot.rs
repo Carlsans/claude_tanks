@@ -66,13 +66,16 @@ fn list(items: &[String]) -> JResult<Ref> {
 
 /// Starts a robot: creates the robot class, the bridge's `BotPeer` and the
 /// bot API under it, which connects to the in-process socket. `classes` is
-/// the translated program (`c::CLASSES`).
+/// the translated program's class lists (`c::CLASSES`, and the shared
+/// crate's when the robot was translated on its own).
 pub fn start(
-    classes: &'static [&'static Class],
+    classes: &[&'static [&'static Class]],
     robot_class: &str,
     info: Info,
 ) -> Result<(), String> {
-    reflect::register(classes);
+    for c in classes {
+        reflect::register(c);
+    }
     // Robots print a lot; `JRT_PRINT` shows it (for debugging).
     set_printing(std::env::var_os("JRT_PRINT").is_some());
     let robot_class = robot_class.replace('.', "/");
@@ -182,6 +185,8 @@ pub fn deliver(text: &str) {
     INBOX.with(|i| i.borrow_mut().push_back(text.to_string()));
     thread::notify(INBOX_MONITOR, true);
     thread::run_until_idle(PATIENCE);
+    // Every thread is waiting: a safe point to free garbage cycles.
+    gc::maybe_collect();
     if std::env::var_os("JRT_TRACE").is_some() {
         eprintln!("   threads: {}", thread::debug_state());
     }

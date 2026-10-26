@@ -31,6 +31,47 @@ pub struct Options {
     /// runs it through the translated bridge and bot API, connecting to the
     /// server at `SERVER_URL` like a Java bot.
     pub robot: Option<Robot>,
+    /// Translating many robots: each robot's own classes apart, everything
+    /// else once.
+    pub split: Option<Split>,
+}
+
+pub enum Split {
+    /// A robot's own classes (the first class-path entry) as module
+    /// `module` of a larger crate, referring to the crate `common` for the
+    /// rest. `out_dir` is the module's folder; it gets `needs.json`, what the
+    /// robot uses of the shared code.
+    Robot { module: String, common: String },
+    /// The shared crate: everything the robots' `needs.json` files (found
+    /// under this folder) ask for.
+    Common { needs: PathBuf },
+}
+
+/// What a robot uses of the shared code.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct Needs {
+    pub methods: Vec<(String, String)>,
+    pub instantiated: Vec<String>,
+    pub used: Vec<String>,
+}
+
+fn collect_needs(dir: &Path, out: &mut Needs) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_needs(&p, out);
+        } else if p.file_name().is_some_and(|n| n == "needs.json")
+            && let Ok(n) =
+                serde_json::from_str::<Needs>(&std::fs::read_to_string(&p).unwrap_or_default())
+        {
+            out.methods.extend(n.methods);
+            out.instantiated.extend(n.instantiated);
+            out.used.extend(n.used);
+        }
+    }
 }
 
 pub struct Robot {
@@ -85,6 +126,15 @@ pub fn translate(opts: &Options) -> Result<Report, String> {
         cp.add(p).map_err(|e| e.to_string())?;
     }
     let mut world = World::new(cp, world::Policy::robots());
+    let mut lits = codegen::Lits::default();
+    if let Some(Split::Robot { module, common }) = &opts.split {
+        world.paths = world::Paths {
+            own: format!("crate::{module}"),
+            other: common.clone(),
+            own_source: Some(0),
+        };
+        lits.prefix = format!("crate::{module}");
+    }
     let mut roots = opts.roots.clone();
     if let Some(m) = &opts.main {
         roots.push(Impl {
@@ -98,9 +148,29 @@ pub fn translate(opts: &Options) -> Result<Report, String> {
         roots.extend(rr);
         instantiated.extend(ri);
     }
-    let reach = Reach::run(&mut world, &roots, &instantiated);
+    let mut used = Vec::new();
+    if let Some(Split::Common { needs }) = &opts.split {
+        let mut n = Needs::default();
+        collect_needs(needs, &mut n);
+        roots.extend(
+            n.methods
+                .into_iter()
+                .map(|(class, sig)| Impl { class, sig }),
+        );
+        instantiated.extend(n.instantiated);
+        used = n.used;
+        roots.sort();
+        roots.dedup();
+        instantiated.sort();
+        instantiated.dedup();
+        used.sort();
+        used.dedup();
+    }
+    let reach = Reach::run_with(&mut world, &roots, &instantiated, &used);
     let mut notes: BTreeMap<String, usize> = reach.unresolved.clone();
-    let mut lits = codegen::Lits::default();
+    if let Some(Split::Robot { module, common }) = &opts.split {
+        return robot_module(&mut world, &mut lits, &reach, opts, module, common, notes);
+    }
     let src = opts.out_dir.join("src");
     let cdir = src.join("c");
     std::fs::create_dir_all(&cdir).map_err(|e| e.to_string())?;
@@ -149,19 +219,108 @@ pub fn translate(opts: &Options) -> Result<Report, String> {
         .canonicalize()
         .map_err(|e| format!("{}: {e}", opts.jrt.display()))?;
     let toml = format!(
-        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\njrt = {{ path = {:?} }}\n{}\n[profile.release]\ndebug = false\n\n[workspace]\n",
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\njrt = {{ path = {:?} }}\n{}\n[profile.release]\ndebug = false\n{}",
         opts.crate_name,
         jrt.display().to_string(),
         if opts.robot.is_some() {
             "tungstenite = \"0.30\"\n"
         } else {
             ""
+        },
+        // The shared crate is a member of the robots' workspace.
+        if matches!(opts.split, Some(Split::Common { .. })) {
+            ""
+        } else {
+            "\n[workspace]\n"
         }
     );
     write_if_changed(&opts.out_dir.join("Cargo.toml"), &toml)?;
     Ok(Report {
         classes,
         methods: reach.methods.len(),
+        notes,
+        missing: world.missing.iter().cloned().collect(),
+        excluded: world.excluded.iter().cloned().collect(),
+    })
+}
+
+/// A robot translated on its own: its classes as a module of a larger crate,
+/// with `start()`, and `needs.json` for the shared crate.
+fn robot_module(
+    world: &mut World,
+    lits: &mut codegen::Lits,
+    reach: &Reach,
+    opts: &Options,
+    _module: &str,
+    common: &str,
+    mut notes: BTreeMap<String, usize>,
+) -> Result<Report, String> {
+    let r = opts
+        .robot
+        .as_ref()
+        .ok_or("a split robot translation needs --robot")?;
+    let cdir = opts.out_dir.join("c");
+    std::fs::create_dir_all(&cdir).map_err(|e| e.to_string())?;
+    let mut mods = String::from("//! The robot's own classes.\n");
+    let mut registry = Vec::new();
+    let mut classes = 0;
+    let mut needs = Needs::default();
+    for name in &reach.used {
+        if world.is_native(name) {
+            continue;
+        }
+        if !world.is_own(name) {
+            needs.used.push(name.clone());
+            continue;
+        }
+        let m = mangle::class(name);
+        let code = codegen::class_module(world, lits, reach, name, &mut notes);
+        write_if_changed(&cdir.join(format!("{m}.rs")), &code)?;
+        writeln!(mods, "pub mod {m};").unwrap();
+        registry.push(format!("&{m}::CLASS"));
+        classes += 1;
+    }
+    for m in &reach.methods {
+        if !world.is_own(&m.class) {
+            needs.methods.push((m.class.clone(), m.sig.clone()));
+        }
+    }
+    for c in &reach.instantiated {
+        if !world.is_own(c) && !world.is_native(c) {
+            needs.instantiated.push(c.clone());
+        }
+    }
+    writeln!(
+        mods,
+        "\npub static CLASSES: &[&jrt::Class] = &[{}];",
+        registry.join(", ")
+    )
+    .unwrap();
+    write_if_changed(&cdir.join("mod.rs"), &mods)?;
+    write_if_changed(&opts.out_dir.join("lits.rs"), &lits.module())?;
+    let authors: Vec<String> = r
+        .authors
+        .iter()
+        .map(|a| format!("{}.to_string()", rust_str(a)))
+        .collect();
+    let root = format!(
+        "//! `{}`, translated by jvm2rs.\npub mod c;\npub mod lits;\n\n/// Starts the robot (see `jrt::robot`).\npub fn start() -> Result<(), String> {{\n    let info = jrt::robot::Info {{ name: {}.to_string(), version: {}.to_string(), authors: vec![{}] }};\n    jrt::robot::start(&[{common}::c::CLASSES, c::CLASSES], {}, info)\n}}\n",
+        r.class,
+        rust_str(&r.name),
+        rust_str(&r.version),
+        authors.join(", "),
+        rust_str(&r.class)
+    );
+    write_if_changed(&opts.out_dir.join("mod.rs"), &root)?;
+    let n = serde_json::to_string(&needs).map_err(|e| e.to_string())?;
+    write_if_changed(&opts.out_dir.join("needs.json"), &n)?;
+    Ok(Report {
+        classes,
+        methods: reach
+            .methods
+            .iter()
+            .filter(|m| world.is_own(&m.class))
+            .count(),
         notes,
         missing: world.missing.iter().cloned().collect(),
         excluded: world.excluded.iter().cloned().collect(),
@@ -204,7 +363,7 @@ fn main() {{
         version: {version}.to_string(),
         authors: vec![{authors}],
     }};
-    if let Err(e) = jrt::robot::start(c::CLASSES, {class_lit}, info) {{
+    if let Err(e) = jrt::robot::start(&[c::CLASSES], {class_lit}, info) {{
         eprintln!("robot did not start: {{e}}");
         std::process::exit(1);
     }}
@@ -220,6 +379,11 @@ fn main() {{
                 }} else {{
                     println!("{{m}}");
                 }}
+            }}
+        }}
+        if std::env::var_os("JRT_COUNT").is_some() {{
+            for (c, n) in jrt::census(25) {{
+                eprintln!("{{n:>9}} {{c}}");
             }}
         }}
         return;

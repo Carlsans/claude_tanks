@@ -20,13 +20,20 @@ use std::fmt::Write;
 #[derive(Default)]
 pub struct Lits {
     pub index: HashMap<Vec<u16>, usize>,
+    /// Path prefix of the `lits` module (`crate` when empty).
+    pub prefix: String,
 }
 
 impl Lits {
     pub fn get(&mut self, s: &[u16]) -> String {
         let n = self.index.len();
         let i = *self.index.entry(s.to_vec()).or_insert(n);
-        format!("&crate::lits::L{i}")
+        let prefix = if self.prefix.is_empty() {
+            "crate"
+        } else {
+            &self.prefix
+        };
+        format!("&{prefix}::lits::L{i}")
     }
 
     pub fn module(&self) -> String {

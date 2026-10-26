@@ -17,6 +17,7 @@ fn main() {
         jrt: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../jrt")),
         main: None,
         robot: None,
+        split: None,
     };
     while let Some(a) = args.next() {
         let mut val = || args.next().unwrap_or_else(|| panic!("{a} needs a value"));
@@ -27,6 +28,19 @@ fn main() {
             "--name" => opts.crate_name = val(),
             "--jrt" => opts.jrt = PathBuf::from(val()),
             "--new" => opts.instantiated.push(val().replace('.', "/")),
+            // A robot's own classes as module <module> of a larger crate that
+            // depends on the shared crate <common>.
+            "--split-robot" => {
+                let module = val();
+                let common = args.next().expect("--split-robot <module> <common crate>");
+                opts.split = Some(jvm2rs::Split::Robot { module, common });
+            }
+            // The shared crate, from the robots' needs.json files.
+            "--common" => {
+                opts.split = Some(jvm2rs::Split::Common {
+                    needs: PathBuf::from(val()),
+                })
+            }
             // A robot and its bot file (.json): name, version, authors.
             "--robot" => {
                 let class = val().replace('.', "/");

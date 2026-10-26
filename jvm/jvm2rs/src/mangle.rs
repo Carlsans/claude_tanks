@@ -7,7 +7,9 @@ fn escape(s: &str, out: &mut String) {
             '_' => out.push_str("_u"),
             '/' => out.push('_'),
             '$' => out.push_str("_d"),
-            '<' | '>' => {}
+            // `<init>` and `<clinit>`: apart from methods named `init`.
+            '<' => out.push_str("_l"),
+            '>' => {}
             c => out.push_str(&format!("_x{:x}_", c as u32)),
         }
     }

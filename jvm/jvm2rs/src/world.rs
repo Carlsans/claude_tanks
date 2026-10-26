@@ -20,6 +20,8 @@ pub enum Source {
 pub struct Class {
     pub name: String,
     pub source: Source,
+    /// From the class path entry this translation emits (`Paths::own_source`).
+    pub own: bool,
     pub sup: Option<String>,
     pub interfaces: Vec<String>,
     pub interface: bool,
@@ -174,9 +176,34 @@ impl Policy {
     }
 }
 
+/// Where translated classes live in Rust. A robot translated on its own
+/// emits only its own classes (from one class-path entry); the rest is in a
+/// crate translated once for all robots.
+#[derive(Clone)]
+pub struct Paths {
+    /// Path prefix of the classes this translation emits.
+    pub own: String,
+    /// Path prefix of the others.
+    pub other: String,
+    /// The class-path entry whose classes are this translation's own; `None`
+    /// for all of them.
+    pub own_source: Option<usize>,
+}
+
+impl Default for Paths {
+    fn default() -> Self {
+        Paths {
+            own: "crate".into(),
+            other: "crate".into(),
+            own_source: None,
+        }
+    }
+}
+
 pub struct World {
     pub cp: ClassPath,
     pub policy: Policy,
+    pub paths: Paths,
     classes: HashMap<String, Option<Class>>,
     layouts: HashMap<String, Layout>,
     /// Classes that were referenced but found nowhere.
@@ -190,6 +217,7 @@ impl World {
         World {
             cp,
             policy,
+            paths: Paths::default(),
             classes: HashMap::new(),
             layouts: HashMap::new(),
             missing: BTreeSet::new(),
@@ -213,6 +241,7 @@ impl World {
         if let Some(n) = spec::NATIVE_CLASSES.iter().find(|c| c.name == name) {
             return Some(Class {
                 name: name.to_string(),
+                own: false,
                 source: Source::Native(n),
                 sup: n.sup.filter(|_| !n.interface).map(String::from),
                 interfaces: n.interfaces.iter().map(|s| s.to_string()).collect(),
@@ -226,8 +255,13 @@ impl World {
             self.excluded.insert(name.to_string());
             return None;
         }
+        let own = match self.paths.own_source {
+            None => true,
+            Some(k) => self.cp.source_of(name) == Some(k),
+        };
         match self.cp.load(name) {
             Ok(Some(cf)) => Some(Class {
+                own,
                 name: name.to_string(),
                 sup: cf.super_name.clone().filter(|_| !cf.is_interface()),
                 interfaces: cf.interfaces.clone(),
@@ -576,13 +610,26 @@ impl World {
         if self.is_native(name) {
             format!("jrt::{}", mangle::native_class(name))
         } else {
-            format!("crate::c::{}::CLASS", mangle::class(name))
+            format!("{}::CLASS", self.module(name))
         }
+    }
+
+    /// Whether a class is one this translation emits.
+    pub fn is_own(&self, name: &str) -> bool {
+        self.classes
+            .get(name)
+            .and_then(|c| c.as_ref())
+            .is_none_or(|c| c.own)
     }
 
     /// The Rust module of a translated class.
     pub fn module(&self, name: &str) -> String {
-        format!("crate::c::{}", mangle::class(name))
+        let prefix = if self.is_own(name) {
+            &self.paths.own
+        } else {
+            &self.paths.other
+        };
+        format!("{prefix}::c::{}", mangle::class(name))
     }
 
     /// The Rust function of a method implementation.
@@ -623,7 +670,20 @@ impl Reach {
     /// Starts from `roots` and the `Object` methods the runtime calls
     /// virtually (toString, hashCode, equals).
     pub fn run(world: &mut World, roots: &[Impl], instantiated: &[String]) -> Reach {
+        Reach::run_with(world, roots, instantiated, &[])
+    }
+
+    /// Also keeps the `Class` statics of `used` classes.
+    pub fn run_with(
+        world: &mut World,
+        roots: &[Impl],
+        instantiated: &[String],
+        used: &[String],
+    ) -> Reach {
         let mut r = Reach::default();
+        for c in used {
+            r.use_class(world, c);
+        }
         for s in &spec::OBJECT_SLOTS[..3] {
             r.vcall(world, spec::OBJECT, s);
         }
@@ -660,7 +720,10 @@ impl Reach {
                 r.instantiate(world, c);
             }
             match world.resolve_method(c, s) {
-                Some((decl, m)) if m.access & access::STATIC != 0 || s.starts_with("<init>") => {
+                Some((decl, m))
+                    if m.access & (access::STATIC | access::PRIVATE) != 0
+                        || s.starts_with("<init>") =>
+                {
                     r.init(world, &decl);
                     r.add(
                         world,

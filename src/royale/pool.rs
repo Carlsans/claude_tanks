@@ -39,6 +39,9 @@ fn too_slow(turns: u64, skipped: u64, seconds: f64) -> bool {
 /// Memory one bot process may take: the heap `BotDir::launch` allows a JVM,
 /// plus the JVM itself.
 pub const BOT_MEMORY_MB: u64 = 400;
+/// The same for a robot translated to Rust (`scripts/translate_robots.py`),
+/// with room for robots that keep large statistics.
+pub const NATIVE_BOT_MEMORY_MB: u64 = 80;
 
 /// Memory available for new processes, in MB (Linux only).
 pub fn available_memory_mb() -> Option<u64> {

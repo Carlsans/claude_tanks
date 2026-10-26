@@ -11,6 +11,7 @@
 //! robot on its own) can call into each other.
 
 pub mod fmt;
+pub mod gc;
 pub mod n;
 pub mod reflect;
 pub mod robot;
@@ -87,6 +88,31 @@ pub struct Obj {
     pub prims: Box<[Cell<u64>]>,
     pub refs: Box<[RefCell<Ref>]>,
     pub ext: Ext,
+    /// The cycle collector's bookkeeping (`gc`).
+    pub gc: Cell<u32>,
+}
+
+/// Every object comes from here: counted (`JRT_COUNT`), and registered with
+/// the cycle collector if it can hold references.
+pub fn make(
+    class: &'static Class,
+    prims: Box<[Cell<u64>]>,
+    refs: Box<[RefCell<Ref>]>,
+    ext: Ext,
+) -> Rc<Obj> {
+    track(class, 1);
+    let edges = !refs.is_empty() || matches!(ext, Ext::Refs(_));
+    let o = Rc::new(Obj {
+        class,
+        prims,
+        refs,
+        ext,
+        gc: Cell::new(0),
+    });
+    if edges {
+        gc::register(&o);
+    }
+    o
 }
 
 /// Storage beyond fields: arrays and the native classes' state.
@@ -112,14 +138,45 @@ pub enum Ext {
 
 // ---------------------------------------------------------------- objects
 
+/// Counts live objects per class when `JRT_COUNT` is set (for finding
+/// leaks: reference cycles are never freed).
+static COUNTING: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("JRT_COUNT").is_some());
+
+thread_local! {
+    static LIVE: RefCell<HashMap<&'static str, i64>> = RefCell::new(HashMap::new());
+}
+
+#[inline]
+fn track(c: &'static Class, d: i64) {
+    if *COUNTING {
+        LIVE.with(|l| *l.borrow_mut().entry(c.name).or_default() += d);
+    }
+}
+
+/// The classes with the most live objects (`JRT_COUNT`).
+pub fn census(top: usize) -> Vec<(&'static str, i64)> {
+    let mut v: Vec<(&'static str, i64)> =
+        LIVE.with(|l| l.borrow().iter().map(|(k, v)| (*k, *v)).collect());
+    v.sort_by_key(|(_, n)| -n);
+    v.truncate(top);
+    v
+}
+
+impl Drop for Obj {
+    fn drop(&mut self) {
+        track(self.class, -1);
+    }
+}
+
 /// A new instance with every field zero or null (`new`).
 pub fn alloc(c: &'static Class) -> Ref {
-    Some(Rc::new(Obj {
-        class: c,
-        prims: (0..c.prims).map(|_| Cell::new(0)).collect(),
-        refs: (0..c.refs).map(|_| RefCell::new(None)).collect(),
-        ext: c.ext.map_or(Ext::None, |f| f()),
-    }))
+    Some(make(
+        c,
+        (0..c.prims).map(|_| Cell::new(0)).collect(),
+        (0..c.refs).map(|_| RefCell::new(None)).collect(),
+        c.ext.map_or(Ext::None, |f| f()),
+    ))
 }
 
 /// Null check.
@@ -288,12 +345,7 @@ pub fn array_class(elem: &'static Class) -> &'static Class {
 }
 
 fn array_obj(c: &'static Class, ext: Ext) -> Ref {
-    Some(Rc::new(Obj {
-        class: c,
-        prims: Box::new([]),
-        refs: Box::new([]),
-        ext,
-    }))
+    Some(make(c, Box::new([]), Box::new([]), ext))
 }
 
 /// `newarray`: an array of a primitive type, all zeros.
@@ -466,12 +518,7 @@ pub fn shallow_clone(o: &Rc<Obj>) -> Rc<Obj> {
         Ext::Class(c) => Ext::Class(c),
         Ext::Any(_) => panic!("cannot clone {}", o.class.name),
     };
-    Rc::new(Obj {
-        class: o.class,
-        prims: o.prims.clone(),
-        refs: o.refs.clone(),
-        ext,
-    })
+    make(o.class, o.prims.clone(), o.refs.clone(), ext)
 }
 
 // ---------------------------------------------------------------- types
@@ -689,12 +736,12 @@ pub fn describe(t: &Throw) -> String {
 // ---------------------------------------------------------------- strings
 
 pub fn new_string(chars: Vec<u16>) -> Ref {
-    Some(Rc::new(Obj {
-        class: &C_java_lang_String,
-        prims: Box::new([]),
-        refs: Box::new([]),
-        ext: Ext::Str(OnceCell::from(chars.into_boxed_slice())),
-    }))
+    Some(make(
+        &C_java_lang_String,
+        Box::new([]),
+        Box::new([]),
+        Ext::Str(OnceCell::from(chars.into_boxed_slice())),
+    ))
 }
 
 /// A Java string from a Rust one.
@@ -780,12 +827,12 @@ pub fn class_object(c: &'static Class) -> Ref {
         t.borrow_mut()
             .entry(key)
             .or_insert_with(|| {
-                Rc::new(Obj {
-                    class: &C_java_lang_Class,
-                    prims: Box::new([]),
-                    refs: Box::new([]),
-                    ext: Ext::Class(c),
-                })
+                make(
+                    &C_java_lang_Class,
+                    Box::new([]),
+                    Box::new([]),
+                    Ext::Class(c),
+                )
             })
             .clone()
     }))

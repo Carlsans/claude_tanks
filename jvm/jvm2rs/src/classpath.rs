@@ -90,6 +90,15 @@ impl ClassPath {
         self.sources.is_empty()
     }
 
+    /// The class-path entry a class comes from.
+    pub fn source_of(&self, name: &str) -> Option<usize> {
+        let file = format!("{name}.class");
+        self.sources.iter().enumerate().position(|(k, s)| match s {
+            Source::Dir(d) => d.join(&file).is_file(),
+            Source::Zip(..) => self.index.get(name) == Some(&k),
+        })
+    }
+
     /// Whether a class comes from the Java library (a jmod).
     pub fn is_library(&self, name: &str) -> bool {
         let file = format!("{name}.class");
