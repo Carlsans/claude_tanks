@@ -365,6 +365,69 @@ fn analyze(cf: &ClassFile, insns: &[(u32, Insn)], handlers: &[Handler]) -> Resul
     })
 }
 
+// ---------------------------------------------------------------- liveness
+
+/// For each instruction, the reference locals that are read after it (a
+/// bit per slot). `None` if the method uses subroutines.
+fn ref_liveness(
+    insns: &[(u32, Insn)],
+    handlers: &[Handler],
+    index: &HashMap<u32, usize>,
+    max_locals: usize,
+) -> Option<Vec<Vec<u64>>> {
+    if insns
+        .iter()
+        .any(|(_, i)| matches!(i, Insn::Jsr(_) | Insn::Ret(_)))
+    {
+        return None;
+    }
+    let words = max_locals / 64 + 1;
+    let n = insns.len();
+    // Successors: branch targets, the next instruction, and the handlers
+    // covering the instruction.
+    let succ: Vec<Vec<usize>> = (0..n)
+        .map(|k| {
+            let (pc, insn) = &insns[k];
+            let mut v: Vec<usize> = insn.targets().iter().map(|t| index[t]).collect();
+            if insn.falls_through() && k + 1 < n {
+                v.push(k + 1);
+            }
+            for h in handlers {
+                if u32::from(h.start) <= *pc && *pc < u32::from(h.end) {
+                    v.push(index[&u32::from(h.handler)]);
+                }
+            }
+            v
+        })
+        .collect();
+    let mut live_in: Vec<Vec<u64>> = vec![vec![0; words]; n];
+    let mut live_out: Vec<Vec<u64>> = vec![vec![0; words]; n];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for k in (0..n).rev() {
+            let mut out = vec![0u64; words];
+            for &s in &succ[k] {
+                for (o, i) in out.iter_mut().zip(&live_in[s]) {
+                    *o |= i;
+                }
+            }
+            let mut inn = out.clone();
+            match &insns[k].1 {
+                Insn::Store(K::A, l) => inn[usize::from(*l) / 64] &= !(1 << (usize::from(*l) % 64)),
+                Insn::Load(K::A, l) => inn[usize::from(*l) / 64] |= 1 << (usize::from(*l) % 64),
+                _ => {}
+            }
+            if inn != live_in[k] || out != live_out[k] {
+                live_in[k] = inn;
+                live_out[k] = out;
+                changed = true;
+            }
+        }
+    }
+    Some(live_out)
+}
+
 // ---------------------------------------------------------------- methods
 
 struct MethodGen<'a> {
@@ -377,7 +440,15 @@ struct MethodGen<'a> {
     vars: BTreeSet<(String, K)>,
     st: Vec<K>,
     /// Per stack entry: the local it stands for, loaded but not copied yet.
-    alias: Vec<Option<String>>,
+    alias: Vec<Option<Pend>>,
+    /// Per instruction: the reference locals still read after it (`None`:
+    /// unknown, so every load copies).
+    live_out: Option<Vec<Vec<u64>>>,
+    /// The instruction being translated.
+    cur: usize,
+    /// Expressions already taken from the stack by this instruction (they
+    /// run after the ones taken later).
+    popped: Vec<String>,
     blocks: &'a Blocks,
     /// Handler list (indices into the code's handlers) per dispatch id.
     dispatch: Vec<Vec<usize>>,
@@ -392,6 +463,32 @@ struct MethodGen<'a> {
 pub struct Extras {
     pub code: String,
     pub lambdas: usize,
+}
+
+/// A reference on the stack that has not been copied yet.
+#[derive(Clone)]
+enum Pend {
+    /// Just a local variable.
+    Local(String),
+    /// A reference field read from a pending reference (already null
+    /// checked): the expression of type `&Ref`.
+    Field(String),
+}
+
+impl Pend {
+    fn borrow(&self) -> String {
+        match self {
+            Pend::Local(l) => format!("&{l}"),
+            Pend::Field(b) => b.clone(),
+        }
+    }
+
+    fn owned(&self) -> String {
+        match self {
+            Pend::Local(l) => format!("{l}.clone()"),
+            Pend::Field(b) => format!("jrt::cl({b})"),
+        }
+    }
 }
 
 const DISPATCH_BASE: u32 = 1 << 30;
@@ -420,16 +517,16 @@ impl MethodGen<'_> {
 
     /// Pushes a reference that is just local `l`: nothing is copied until a
     /// use needs its own reference.
-    fn push_alias(&mut self, l: String) {
+    fn push_alias(&mut self, p: Pend) {
         self.st.push(K::A);
-        self.alias.push(Some(l));
+        self.alias.push(Some(p));
     }
 
     /// Copies a stack entry that stands for a local into its own variable.
     fn materialize(&mut self, i: usize) {
-        if let Some(l) = self.alias[i].take() {
+        if let Some(p) = self.alias[i].take() {
             let v = self.sv(i, K::A);
-            self.line(&format!("{v} = {l}.clone();"));
+            self.line(&format!("{v} = {};", p.owned()));
         }
     }
 
@@ -444,7 +541,7 @@ impl MethodGen<'_> {
     /// Before local `l` changes.
     fn spill(&mut self, l: &str) {
         for i in 0..self.st.len() {
-            if self.alias[i].as_deref() == Some(l) {
+            if matches!(&self.alias[i], Some(Pend::Local(n)) if n == l) {
                 self.materialize(i);
             }
         }
@@ -462,25 +559,68 @@ impl MethodGen<'_> {
     /// The top value moved out (references are taken, leaving null).
     fn pop_val(&mut self) -> String {
         let i = self.st.len() - 1;
-        if let Some(l) = self.alias[i].take() {
+        if let Some(p) = self.alias[i].take() {
             self.st.pop();
             self.alias.pop();
-            return format!("{l}.clone()");
+            let e = match &p {
+                Pend::Local(l) if self.last_use(l) => format!("{l}.take()"),
+                _ => p.owned(),
+            };
+            self.popped.push(e.clone());
+            return e;
         }
         let (v, k) = self.pop();
-        if k == K::A { format!("{v}.take()") } else { v }
+        let e = if k == K::A { format!("{v}.take()") } else { v };
+        self.popped.push(e.clone());
+        e
     }
 
-    /// The top reference as an expression of type `&Ref`.
-    fn pop_ref(&mut self) -> String {
+    /// Whether this is the last use of local `l` (`l7a`): nothing reads it
+    /// after this instruction, and nothing else this instruction still
+    /// evaluates mentions it. The reference can then be moved out.
+    fn last_use(&self, l: &str) -> bool {
+        let Some(live) = &self.live_out else {
+            return false;
+        };
+        let Ok(n) = l[1..l.len() - 1].parse::<usize>() else {
+            return false;
+        };
+        let after = &live[self.cur];
+        if after.get(n / 64).is_some_and(|w| w >> (n % 64) & 1 == 1) {
+            return false;
+        }
+        !self.popped.iter().any(|e| e.contains(l))
+            && !self.alias.iter().flatten().any(|p| p.borrow().contains(l))
+    }
+
+    /// The top reference as an expression of type `&Ref`, and whether the
+    /// expression stays valid for later (it does not name a temporary).
+    fn pop_pend(&mut self) -> (String, bool) {
         let i = self.st.len() - 1;
-        if let Some(l) = self.alias[i].take() {
+        if let Some(p) = self.alias[i].take() {
             self.st.pop();
             self.alias.pop();
-            return format!("&{l}");
+            self.popped.push(p.borrow());
+            return (p.borrow(), true);
         }
         let (v, _) = self.pop();
-        format!("&{v}.take()")
+        let e = format!("&{v}.take()");
+        self.popped.push(e.clone());
+        (e, false)
+    }
+
+    fn pop_ref(&mut self) -> String {
+        self.pop_pend().0
+    }
+
+    /// Before anything that can change the heap: pending field reads copy
+    /// their value now.
+    fn flush_fields(&mut self) {
+        for i in 0..self.st.len() {
+            if matches!(self.alias[i], Some(Pend::Field(_))) {
+                self.materialize(i);
+            }
+        }
     }
 
     /// The top reference's variable, left on the stack.
@@ -606,7 +746,7 @@ impl MethodGen<'_> {
             Insn::Load(k, n) => {
                 let l = self.lv(*n, *k);
                 if *k == K::A {
-                    self.push_alias(l);
+                    self.push_alias(Pend::Local(l));
                 } else {
                     let v = self.push(*k);
                     self.line(&format!("{v} = {l};"));
@@ -617,6 +757,7 @@ impl MethodGen<'_> {
                 let v = self.pop_val();
                 let l = self.lv(*n, k);
                 self.spill(&l);
+                self.flush_fields();
                 self.line(&format!("{l} = {v};"));
             }
             Insn::ArrLoad(e) => {
@@ -640,6 +781,7 @@ impl MethodGen<'_> {
                 let val = self.pop_val();
                 let idx = self.pop_val();
                 let arr = self.pop_ref();
+                self.flush_fields();
                 let (f, val) = match e {
                     Elem::B => ("ast_b", format!("{val} as i8")),
                     Elem::C => ("ast_c", format!("{val} as u16")),
@@ -683,7 +825,7 @@ impl MethodGen<'_> {
                 let n = g1 + g2;
                 let base = self.st.len() - n;
                 let old: Vec<K> = self.st[base..].to_vec();
-                let old_alias: Vec<Option<String>> = self.alias[base..].to_vec();
+                let old_alias: Vec<Option<Pend>> = self.alias[base..].to_vec();
                 // New order, as indices into `old`.
                 let order: Vec<usize> = if matches!(insn, Insn::Swap) {
                     vec![1, 0]
@@ -703,7 +845,7 @@ impl MethodGen<'_> {
                 self.alias.truncate(base);
                 for (t, &o) in order.iter().enumerate() {
                     match &old_alias[o] {
-                        Some(l) => self.push_alias(l.clone()),
+                        Some(p) => self.push_alias(p.clone()),
                         None => {
                             let v = self.push(old[o]);
                             write!(code, "{v} = t{t}; ").unwrap();
@@ -839,30 +981,34 @@ impl MethodGen<'_> {
                 self.field(*i, matches!(insn, Insn::GetField(_)), pc)
             }
             Insn::Invoke(kind, i) => self.invoke(*kind, *i, pc),
-            Insn::InvokeDynamic(i) => match crate::indy::parse(self.cf, *i) {
-                crate::indy::Site::Concat(pieces) => self.concat(&pieces, pc),
-                crate::indy::Site::Lambda(l) => self.lambda(&l, pc),
-                crate::indy::Site::Unsupported(why) => {
-                    let (params, ret) = match self.cf.pool.get(*i as usize) {
-                        Some(Const::InvokeDynamic { nat, .. }) => {
-                            let (_, d) = self.cf.name_and_type(*nat).unwrap_or_default();
-                            let (p, r) = desc::method(&d);
-                            (p.len(), r.map(desc::kind))
+            Insn::InvokeDynamic(i) => {
+                self.flush_fields();
+                match crate::indy::parse(self.cf, *i) {
+                    crate::indy::Site::Concat(pieces) => self.concat(&pieces, pc),
+                    crate::indy::Site::Lambda(l) => self.lambda(&l, pc),
+                    crate::indy::Site::Unsupported(why) => {
+                        let (params, ret) = match self.cf.pool.get(*i as usize) {
+                            Some(Const::InvokeDynamic { nat, .. }) => {
+                                let (_, d) = self.cf.name_and_type(*nat).unwrap_or_default();
+                                let (p, r) = desc::method(&d);
+                                (p.len(), r.map(desc::kind))
+                            }
+                            _ => (0, None),
+                        };
+                        for _ in 0..params {
+                            let v = self.pop_val();
+                            self.line(&format!("let _ = {v};"));
                         }
-                        _ => (0, None),
-                    };
-                    for _ in 0..params {
-                        let v = self.pop_val();
-                        self.line(&format!("let _ = {v};"));
+                        if let Some(k) = ret {
+                            self.push(k);
+                        }
+                        self.note(why.clone());
+                        self.throw(&format!("jrt::unsupported({})", rust_str(&why)), pc);
                     }
-                    if let Some(k) = ret {
-                        self.push(k);
-                    }
-                    self.note(why.clone());
-                    self.throw(&format!("jrt::unsupported({})", rust_str(&why)), pc);
                 }
-            },
+            }
             Insn::New(i) => {
+                self.flush_fields();
                 let name = self.cf.class_name(*i).unwrap_or_default();
                 let v = self.push(K::A);
                 if !self.world.exists(&name) {
@@ -1038,12 +1184,47 @@ impl MethodGen<'_> {
             }
             c = self.world.super_of(&k);
         }
+        if self.trivial_init(name) {
+            return;
+        }
         let m = self.world.module(name);
         let call = self.tr(&format!("{m}::init()"), pc);
         self.line(&format!("{call};"));
     }
 
+    /// Whether initializing `name` does nothing: no static initializer and
+    /// no string constants to set, in it or its superclasses.
+    fn trivial_init(&mut self, name: &str) -> bool {
+        let mut c = Some(name.to_string());
+        while let Some(k) = c {
+            if self.world.is_native(&k) {
+                return true;
+            }
+            let cf = match self.world.class(&k).map(|c| &c.source) {
+                Some(crate::world::Source::Translated(cf)) => cf.clone(),
+                _ => return false,
+            };
+            let clinit = Impl {
+                class: k.clone(),
+                sig: "<clinit>()V".into(),
+            };
+            let strings = cf.fields.iter().any(|f| {
+                f.access & access::STATIC != 0
+                    && matches!(
+                        f.constant.and_then(|c| cf.pool.get(c as usize)),
+                        Some(Const::String(_))
+                    )
+            });
+            if strings || self.reach.methods.contains(&clinit) {
+                return false;
+            }
+            c = self.world.super_of(&k);
+        }
+        true
+    }
+
     fn static_field(&mut self, i: u16, get: bool, pc: u32) {
+        self.flush_fields();
         let f = self.cf.member(i).expect("analysis read it");
         let k = desc::kind(&f.desc);
         let resolved = self.world.resolve_field(&f.class, &f.name, &f.desc);
@@ -1128,7 +1309,21 @@ impl MethodGen<'_> {
             return;
         };
         let letter = k.letter();
-        if get {
+        if get && k == K::A {
+            // Read later, when the value is used: only the null check is
+            // done here. Nothing may write to the heap before then
+            // (`flush_fields`).
+            let (o, stable) = self.pop_pend();
+            if stable {
+                let check = self.tr(&format!("jrt::nn({o}).map(|_| ())"), pc);
+                self.line(&format!("{check};"));
+                self.push_alias(Pend::Field(format!("jrt::fref({o}, {idx})")));
+            } else {
+                let call = self.tr(&format!("jrt::gf_a({o}, {idx})"), pc);
+                let v = self.push(k);
+                self.line(&format!("{v} = {call};"));
+            }
+        } else if get {
             let o = self.pop_ref();
             let call = self.tr(&format!("jrt::gf_{letter}({o}, {idx})"), pc);
             let v = self.push(k);
@@ -1143,6 +1338,7 @@ impl MethodGen<'_> {
                 _ => v,
             };
             let o = self.pop_ref();
+            self.flush_fields();
             let call = self.tr(&format!("jrt::pf_{letter}({o}, {idx}, {v})"), pc);
             self.line(&format!("{call};"));
         }
@@ -1155,6 +1351,7 @@ impl MethodGen<'_> {
         let mut args: Vec<String> = (0..params.len()).map(|_| self.pop_val()).collect();
         args.reverse();
         let recv = (kind != Invoke::Static).then(|| self.pop_val());
+        self.flush_fields();
         let ret_k = ret.map(desc::kind);
         let what = format!("{}.{s}", r.class);
         let fail = |me: &mut Self, why: &str| {
@@ -1541,6 +1738,9 @@ fn method_body(
         st: Vec::new(),
         blocks: &blocks,
         alias: Vec::new(),
+        live_out: ref_liveness(&insns, &code.handlers, &index, usize::from(code.max_locals)),
+        cur: 0,
+        popped: Vec::new(),
         dispatch: Vec::new(),
         handlers: &code.handlers,
         notes,
@@ -1561,6 +1761,8 @@ fn method_body(
             let next_block = insns
                 .get(k + 1)
                 .and_then(|(p, _)| blocks.by_pc.get(p).copied());
+            g.cur = k;
+            g.popped.clear();
             g.emit(*pc, insn, next_block);
             let ends = !insn.falls_through() || matches!(insn, Insn::Jsr(_));
             if ends {

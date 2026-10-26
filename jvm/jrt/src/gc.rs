@@ -11,10 +11,11 @@
 //! whatever they reach is live, the rest is garbage. Collection runs only
 //! where no Java code is running (between messages to a robot).
 use crate::*;
-use std::rc::Weak;
 
 thread_local! {
-    static ALL: RefCell<Vec<Weak<Obj>>> = const { RefCell::new(Vec::new()) };
+    /// The registered objects. An object leaves the list when it is freed
+    /// (`Obj::drop`), so the list holds only live ones.
+    static ALL: RefCell<Vec<*const Obj>> = const { RefCell::new(Vec::new()) };
     static SINCE: Cell<usize> = const { Cell::new(0) };
     static EVERY: Cell<usize> = const { Cell::new(MIN_EVERY) };
 }
@@ -25,8 +26,25 @@ thread_local! {
 const MIN_EVERY: usize = 100_000;
 
 pub fn register(o: &Rc<Obj>) {
-    ALL.with(|a| a.borrow_mut().push(Rc::downgrade(o)));
+    ALL.with(|a| {
+        let mut a = a.borrow_mut();
+        o.slot.set(a.len() as u32);
+        a.push(Rc::as_ptr(o));
+    });
     SINCE.with(|s| s.set(s.get() + 1));
+}
+
+/// Takes the object in `slot` off the list (it is being freed).
+pub fn unregister(slot: u32) {
+    let _ = ALL.try_with(|a| {
+        let mut a = a.borrow_mut();
+        let i = slot as usize;
+        a.swap_remove(i);
+        if let Some(&moved) = a.get(i) {
+            // The object that took its place is alive: it is on the list.
+            unsafe { (*moved).slot.set(slot) };
+        }
+    });
 }
 
 /// Collects if enough objects were made since the last collection.
@@ -55,10 +73,14 @@ fn edges(o: &Obj) -> Option<Vec<Rc<Obj>>> {
 /// Frees unreachable cycles. Returns how many objects it cleared.
 pub fn collect() -> usize {
     SINCE.with(|s| s.set(0));
+    // Our own reference to each, so none is freed (and unlisted) meanwhile.
     let objs: Vec<Rc<Obj>> = ALL
-        .with(|a| std::mem::take(&mut *a.borrow_mut()))
+        .with(|a| a.borrow().clone())
         .into_iter()
-        .filter_map(|w| w.upgrade())
+        .map(|p| unsafe {
+            Rc::increment_strong_count(p);
+            Rc::from_raw(p)
+        })
         .collect();
     const UNSEEN: u32 = u32::MAX;
     for (i, o) in objs.iter().enumerate() {
@@ -120,14 +142,8 @@ pub fn collect() -> usize {
             b.clear();
         }
     }
-    ALL.with(|a| {
-        let mut a = a.borrow_mut();
-        for (i, o) in objs.iter().enumerate() {
-            if live[i] {
-                a.push(Rc::downgrade(o));
-            }
-        }
-        EVERY.with(|e| e.set(MIN_EVERY.max(3 * a.len())));
-    });
+    let alive = live.iter().filter(|l| **l).count();
+    EVERY.with(|e| e.set(MIN_EVERY.max(3 * alive)));
+    drop(objs);
     cleared
 }

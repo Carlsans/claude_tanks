@@ -15,6 +15,7 @@ pub mod gc;
 pub mod n;
 pub mod reflect;
 pub mod robot;
+pub mod small;
 pub mod spec;
 pub mod thread;
 
@@ -83,23 +84,24 @@ pub mod classes {
 }
 pub use classes::*;
 
+/// Field storage: small objects keep it inside themselves.
+pub type Prims = small::Small<Cell<u64>, 4>;
+pub type Refs = small::Small<RefCell<Ref>, 3>;
+
 pub struct Obj {
     pub class: &'static Class,
-    pub prims: Box<[Cell<u64>]>,
-    pub refs: Box<[RefCell<Ref>]>,
+    pub prims: Prims,
+    pub refs: Refs,
     pub ext: Ext,
     /// The cycle collector's bookkeeping (`gc`).
     pub gc: Cell<u32>,
+    /// Position in the collector's list (`u32::MAX`: not listed).
+    pub slot: Cell<u32>,
 }
 
 /// Every object comes from here: counted (`JRT_COUNT`), and registered with
 /// the cycle collector if it can hold references.
-pub fn make(
-    class: &'static Class,
-    prims: Box<[Cell<u64>]>,
-    refs: Box<[RefCell<Ref>]>,
-    ext: Ext,
-) -> Rc<Obj> {
+pub fn make(class: &'static Class, prims: Prims, refs: Refs, ext: Ext) -> Rc<Obj> {
     track(class, 1);
     let edges = !refs.is_empty() || matches!(ext, Ext::Refs(_));
     let o = Rc::new(Obj {
@@ -108,6 +110,7 @@ pub fn make(
         refs,
         ext,
         gc: Cell::new(0),
+        slot: Cell::new(u32::MAX),
     });
     if edges {
         gc::register(&o);
@@ -166,6 +169,9 @@ pub fn census(top: usize) -> Vec<(&'static str, i64)> {
 impl Drop for Obj {
     fn drop(&mut self) {
         track(self.class, -1);
+        if self.slot.get() != u32::MAX {
+            gc::unregister(self.slot.get());
+        }
     }
 }
 
@@ -173,8 +179,8 @@ impl Drop for Obj {
 pub fn alloc(c: &'static Class) -> Ref {
     Some(make(
         c,
-        (0..c.prims).map(|_| Cell::new(0)).collect(),
-        (0..c.refs).map(|_| RefCell::new(None)).collect(),
+        Prims::new_with(c.prims as usize, || Cell::new(0)),
+        Refs::new_with(c.refs as usize, || RefCell::new(None)),
         c.ext.map_or(Ext::None, |f| f()),
     ))
 }
@@ -226,6 +232,25 @@ pub fn gf_f(r: &Ref, i: usize) -> JResult<f32> {
 pub fn gf_d(r: &Ref, i: usize) -> JResult<f64> {
     Ok(f64::from_bits(prim(nn(r)?, i).get()))
 }
+/// Reference field `i` of a non-null object, borrowed (null for a null `r`).
+/// The caller reads it before anything writes to the heap.
+#[inline]
+pub fn fref(r: &Ref, i: usize) -> &Ref {
+    match r {
+        Some(o) => {
+            debug_assert!(i < o.refs.len());
+            unsafe { &*o.refs.get_unchecked(i).as_ptr() }
+        }
+        None => &None,
+    }
+}
+
+/// A copy of a reference.
+#[inline]
+pub fn cl(r: &Ref) -> Ref {
+    r.clone()
+}
+
 #[inline]
 pub fn gf_a(r: &Ref, i: usize) -> JResult<Ref> {
     let o = nn(r)?;
@@ -359,7 +384,7 @@ pub fn array_class(elem: &'static Class) -> &'static Class {
 }
 
 fn array_obj(c: &'static Class, ext: Ext) -> Ref {
-    Some(make(c, Box::new([]), Box::new([]), ext))
+    Some(make(c, Prims::empty(), Refs::empty(), ext))
 }
 
 /// `newarray`: an array of a primitive type, all zeros.
@@ -766,8 +791,8 @@ pub fn describe(t: &Throw) -> String {
 pub fn new_string(chars: Vec<u16>) -> Ref {
     Some(make(
         &C_java_lang_String,
-        Box::new([]),
-        Box::new([]),
+        Prims::empty(),
+        Refs::empty(),
         Ext::Str(OnceCell::from(chars.into_boxed_slice())),
     ))
 }
@@ -857,8 +882,8 @@ pub fn class_object(c: &'static Class) -> Ref {
             .or_insert_with(|| {
                 make(
                     &C_java_lang_Class,
-                    Box::new([]),
-                    Box::new([]),
+                    Prims::empty(),
+                    Refs::empty(),
                     Ext::Class(c),
                 )
             })
