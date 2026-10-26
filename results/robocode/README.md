@@ -25,7 +25,7 @@
 | M3 | Both together | `gru_mem` with `keep_state=true` | same, in parallel |
 | M0b, M2b, M3b | After 300 generations the memory weights were still small (see below): more training lets M2 and M3 use them | M0, M2 and M3 continued from their latest networks, with a new robot order (`seed=1`). M1 dropped | 600 more generations, 3 runs in parallel |
 | S1 | Against robots that shoot poorly, training alone finds that closing in pays (we still lose 29% of rounds to them, hitting 19% of our shots from 288 units) | M0 recipe from M0 ema, but only the weakest-shooting third of the training robots (262, by damage per turn against the old champion in the [survey](survey.md)). No reward for distance | 300 generations, in parallel with the above |
-| MoE1 | A gate on the battle memory learns when to switch to the specialist, so the tank closes in only on weak opponents | Mixture of experts (`moe`): M0b ema (all robots) and S1 (weak shooters), gate starting even. M0 recipe on all training robots | 300 generations, after S1 and M0b |
+| MoE1 | A gate on the battle memory learns when to switch to the specialist, so the tank closes in only on weak opponents | Mixture of experts (`moe`): M0 ema (all robots) and S1 (weak shooters, itself from M0 ema), gate starting even. M0 recipe on all training robots. With M0 and S1 before it, 900 generations in all, as M0b | 300 generations, after S1 |
 
 ## Results
 
