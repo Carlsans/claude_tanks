@@ -5,6 +5,7 @@
 pub mod boxes;
 pub mod builder;
 pub mod class;
+pub mod enums;
 pub mod iface;
 pub mod math;
 pub mod object;

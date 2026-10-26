@@ -19,10 +19,7 @@ pub fn value_of(v: i32) -> JResult<Ref> {
 }
 
 pub fn is_digit(c: i32) -> JResult<i32> {
-    Ok(
-        ch(c).is_some_and(|c| c.is_ascii_digit() || (c.is_numeric() && !c.is_ascii()))
-            as i32,
-    )
+    Ok(ch(c).is_some_and(|c| c.is_ascii_digit() || (c.is_numeric() && !c.is_ascii())) as i32)
 }
 pub fn is_letter(c: i32) -> JResult<i32> {
     Ok(ch(c).is_some_and(char::is_alphabetic) as i32)

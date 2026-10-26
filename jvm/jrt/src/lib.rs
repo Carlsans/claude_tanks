@@ -65,6 +65,8 @@ pub struct Class {
     /// Makes the extra storage of native classes (strings, builders).
     pub ext: Option<fn() -> Ext>,
     pub component: Component,
+    /// Enum classes: their `values()`, for `Enum.valueOf`.
+    pub values: Option<fn() -> JResult<Ref>>,
 }
 
 #[allow(non_upper_case_globals)]
@@ -199,6 +201,7 @@ macro_rules! prim_array_classes {
             itable: &[],
             ext: None,
             component: Component::Prim($code),
+            values: None,
         };)*
         /// The class of arrays of a primitive type (descriptor letter).
         pub fn prim_array_class(code: u8) -> &'static Class {
@@ -251,6 +254,7 @@ pub fn array_class(elem: &'static Class) -> &'static Class {
         itable: &[],
         ext: None,
         component: Component::Ref(elem),
+        values: None,
     }));
     t.push((key, c));
     c

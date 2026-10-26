@@ -605,6 +605,37 @@ pub const NATIVE_CLASSES: &[NativeClass] = &[
         statics: &[],
     },
     NativeClass {
+        name: "java/lang/Enum",
+        module: "n::enums",
+        sup: Some(OBJECT),
+        interfaces: &["java/lang/Comparable", "java/io/Serializable"],
+        interface: false,
+        // The ordinal and the name.
+        prims: 1,
+        refs: 1,
+        ext: "",
+        methods: &[
+            d("<init>(Ljava/lang/String;I)V", "init"),
+            d("name()Ljava/lang/String;", "name"),
+            d("ordinal()I", "ordinal"),
+            v("toString()Ljava/lang/String;", "to_string"),
+            v("equals(Ljava/lang/Object;)Z", "equals"),
+            v("hashCode()I", "hash_code"),
+            v("clone()Ljava/lang/Object;", "clone"),
+            v("compareTo(Ljava/lang/Object;)I", "compare_to"),
+            d("compareTo(Ljava/lang/Enum;)I", "compare_to"),
+            d(
+                "getDeclaringClass()Ljava/lang/Class;",
+                "get_declaring_class",
+            ),
+            s(
+                "valueOf(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/Enum;",
+                "value_of",
+            ),
+        ],
+        statics: &[],
+    },
+    NativeClass {
         name: "java/lang/Throwable",
         module: "n::throwable",
         sup: Some(OBJECT),

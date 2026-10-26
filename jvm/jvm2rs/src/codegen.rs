@@ -1419,13 +1419,14 @@ pub fn class_module(
     };
     writeln!(
         out,
-        "pub static CLASS: jrt::Class = jrt::Class {{\n    name: {},\n    sup: {sup},\n    ifaces: &[{}],\n    interface: {},\n    prims: {prims},\n    refs: {refs},\n    vtable: &[{}],\n    itable: &[{}],\n    ext: {},\n    component: jrt::Component::None,\n}};\n",
+        "pub static CLASS: jrt::Class = jrt::Class {{\n    name: {},\n    sup: {sup},\n    ifaces: &[{}],\n    interface: {},\n    prims: {prims},\n    refs: {refs},\n    vtable: &[{}],\n    itable: &[{}],\n    ext: {},\n    component: jrt::Component::None,\n    values: {},\n}};\n",
         rust_str(&cf.name),
         ifaces.join(", "),
         cf.is_interface(),
         vtable.join(", "),
         itable.join(", "),
         ext.map_or("None".into(), |e| format!("Some({e})")),
+        enum_values(&cf, reach).unwrap_or("None".into()),
     )
     .unwrap();
     // Static fields and the initializer.
@@ -1529,4 +1530,20 @@ pub fn class_module(
         }
     }
     out
+}
+
+/// An enum class's `values()`, for `Enum.valueOf`.
+fn enum_values(cf: &ClassFile, reach: &Reach) -> Option<String> {
+    if cf.super_name.as_deref() != Some("java/lang/Enum") {
+        return None;
+    }
+    let desc = format!("()[L{};", cf.name);
+    let imp = Impl {
+        class: cf.name.clone(),
+        sig: sig("values", &desc),
+    };
+    reach
+        .methods
+        .contains(&imp)
+        .then(|| format!("Some({})", mangle::method("values", &desc)))
 }

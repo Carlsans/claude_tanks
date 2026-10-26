@@ -542,6 +542,19 @@ impl Reach {
         }
         self.used.insert(name.to_string());
         if let Some(s) = world.super_of(name) {
+            // Enum.valueOf finds the constants through values().
+            if s == "java/lang/Enum" {
+                let values = sig("values", &format!("()[L{name};"));
+                if world.declared(name, &values).is_some_and(|m| m.concrete) {
+                    self.add(
+                        world,
+                        Impl {
+                            class: name.to_string(),
+                            sig: values,
+                        },
+                    );
+                }
+            }
             self.use_class(world, &s);
         }
         let mut ifaces = Vec::new();

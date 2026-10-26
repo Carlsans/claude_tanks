@@ -110,7 +110,7 @@ fn main() {
         }
         writeln!(
             out,
-            "pub static {id}: Class = Class {{ name: {:?}, sup: {}, ifaces: &[{}], interface: {}, prims: {prims}, refs: {refs}, vtable: &[{}], itable: &[{}], ext: {}, component: Component::None }};",
+            "pub static {id}: Class = Class {{ name: {:?}, sup: {}, ifaces: &[{}], interface: {}, prims: {prims}, refs: {refs}, vtable: &[{}], itable: &[{}], ext: {}, component: Component::None, values: None }};",
             c.name,
             match c.sup.filter(|_| !c.interface) {
                 Some(s) => format!("Some(&{})", ident(s)),

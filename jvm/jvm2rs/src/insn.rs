@@ -323,7 +323,11 @@ pub fn decode(code: &[u8], pool: &[Const]) -> Result<Vec<(u32, Insn)>> {
             }
             0x78..=0x83 => {
                 let ops = [Op::Shl, Op::Shr, Op::Ushr, Op::And, Op::Or, Op::Xor];
-                let k = if (op - 0x78).is_multiple_of(2) { K::I } else { K::J };
+                let k = if (op - 0x78).is_multiple_of(2) {
+                    K::I
+                } else {
+                    K::J
+                };
                 (Insn::Arith(ops[((op - 0x78) / 2) as usize], k), 1)
             }
             0x84 => (
