@@ -16,6 +16,9 @@ is left out (and listed in <out>/failed.json).
 import argparse, concurrent.futures as cf, json, os, re, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIG_KB = 5000  # a robot with more generated code than this builds on its own
+# Left out: rustc needs over 14 GB and 20 minutes for each of these.
+SKIP = {"r_krabb_slink_garm_0_9u": "too large to compile"}
 # rustc needs over 10 GB for 40 robots at once.
 BATCH = 10
 
@@ -58,14 +61,42 @@ def build_shims(out):
     return dst
 
 
+def sync_dir(new, old):
+    """Makes `old` the same as `new`, touching only files whose content changed:
+    cargo rebuilds a crate when a source file is newer than its last build."""
+    for root, _, files in os.walk(new):
+        for f in files:
+            src = os.path.join(root, f)
+            dst = os.path.join(old, os.path.relpath(src, new))
+            if os.path.exists(dst) and open(src, "rb").read() == open(dst, "rb").read():
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+    for root, _, files in os.walk(old, topdown=False):
+        for f in files:
+            dst = os.path.join(root, f)
+            if not os.path.exists(os.path.join(new, os.path.relpath(dst, old))):
+                os.remove(dst)
+        if root != old and not os.listdir(root):
+            os.rmdir(root)
+    shutil.rmtree(new)
+
+
 def translate_robot(jvm2rs, common_cp, out, r):
     mod_dir = os.path.join(out, "robots", r["key"])
-    shutil.rmtree(mod_dir, ignore_errors=True)
+    tmp = mod_dir + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
     cp = os.pathsep.join([r["jar"]] + common_cp)
-    res = run([jvm2rs, "--cp", cp, "--robot", r["class"], r["json"], "--split-robot", r["key"], "jcommon", "--out", mod_dir])
+    res = run([jvm2rs, "--cp", cp, "--robot", r["class"], r["json"], "--split-robot", r["key"], "jcommon", "--out", tmp])
+    if res.returncode == 0:
+        sync_dir(tmp, mod_dir)
     with open(mod_dir + ".report", "w") as f:
         f.write(res.stderr)
     return r["key"], res.returncode == 0
+
+
+def dir_kb(path):
+    return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(path) for f in fs) // 1024
 
 
 def write(path, text):
@@ -185,7 +216,8 @@ def main():
     ap.add_argument("--bots", default=os.path.join(ROOT, "bots", "rumble"))
     ap.add_argument("--out", default=os.path.join(ROOT, "target", "jvmbots"))
     ap.add_argument("--install", default=os.path.join(ROOT, "bots", "rumble-rs"))
-    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--jobs", type=int, default=4, help="translations at once, and compilations unless --build-jobs")
+    ap.add_argument("--build-jobs", type=int, default=0)
     ap.add_argument("--only", default="")
     ap.add_argument("--skip-build", action="store_true")
     a = ap.parse_args()
@@ -212,19 +244,33 @@ def main():
                 print(f"  translated {i + 1}", flush=True)
     print(f"translated {len(ok)}, failed {len(failed)}", flush=True)
     # The shared crate, from everything the robots need.
+    common = os.path.join(out, "jcommon")
     res = run([jvm2rs, "--cp", os.pathsep.join(common_cp), "--common", os.path.join(out, "robots"),
-               "--out", os.path.join(out, "jcommon"), "--name", "jcommon"])
+               "--out", common + ".new", "--name", "jcommon"])
     print(res.stderr.splitlines()[0] if res.stderr else "jcommon", flush=True)
     if res.returncode:
         sys.exit(res.stderr)
+    if os.path.isdir(common):
+        sync_dir(common + ".new", common)
+    else:
+        os.rename(common + ".new", common)
     jrt = os.path.join(ROOT, "jvm", "jrt")
     keys = sorted(ok)
     # Robots keep their batch when others are left out, so only the batches
     # that lost a robot build again.
-    batches = [keys[i:i + BATCH] for i in range(0, len(keys), BATCH)]
+    # The few huge ones (rustc needs a quarter of an hour for each) get a crate
+    # of their own, after the others, so they build side by side with the rest.
+    big = [k for k in keys if dir_kb(os.path.join(out, "robots", k)) > BIG_KB]
+    rest = [k for k in keys if k not in big]
+    batches = [rest[i:i + BATCH] for i in range(0, len(rest), BATCH)] + [[k] for k in big]
+    # Kept as empty crates, so the others keep their numbers (and their builds).
+    for k, why in SKIP.items():
+        if k in keys:
+            failed[k] = why
+    batches = [[k for k in b if k not in SKIP] for b in batches]
     while not a.skip_build:
         generate(out, batches, jrt)
-        bad, r = build(out, a.jobs)
+        bad, r = build(out, a.build_jobs or a.jobs)
         if not bad:
             break
         print(f"  {len(bad)} robots do not compile: {sorted(bad)[:8]}", flush=True)
