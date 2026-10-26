@@ -114,6 +114,9 @@ MAIN = r'''//! Runs one translated robot as a Tank Royale bot: `rumble-robots <k
 //! server's messages, printing the robot's answers).
 use tungstenite::Message;
 
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn start(key: &str) -> Option<fn() -> Result<(), String>> {
     Some(match key {
 %ARMS%
@@ -193,7 +196,7 @@ def generate(out, batches, jrt):
     write(os.path.join(out, "rumble_robots", "src", "main.rs"), ALLOW + MAIN.replace("%ARMS%", "\n".join(arms)))
     write(os.path.join(out, "rumble_robots", "Cargo.toml"),
           '[package]\nname = "rumble-robots"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n'
-          f'jrt = {{ path = "{jrt}" }}\njcommon = {{ path = "../jcommon" }}\ntungstenite = "0.30"\n' + "\n".join(deps) + "\n")
+          f'jrt = {{ path = "{jrt}" }}\njcommon = {{ path = "../jcommon" }}\ntungstenite = "0.30"\nmimalloc = "0.1"\n' + "\n".join(deps) + "\n")
     write(os.path.join(out, "Cargo.toml"),
           "[workspace]\nresolver = \"2\"\nmembers = [" + ", ".join(f'"{m}"' for m in members) + "]\n\n"
           "[profile.release]\ndebug = false\nincremental = false\n")

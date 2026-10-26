@@ -167,9 +167,24 @@ fn find(hay: &[u16], needle: &[u16], from: usize) -> i32 {
     if needle.is_empty() {
         return from.min(hay.len()) as i32;
     }
-    (from..hay.len().saturating_sub(needle.len() - 1))
-        .find(|&i| hay[i..].starts_with(needle))
-        .map_or(-1, |i| i as i32)
+    if from + needle.len() > hay.len() {
+        return -1;
+    }
+    // Candidates are the places the first character occurs.
+    let (first, rest) = (needle[0], &needle[1..]);
+    let last = hay.len() - needle.len();
+    let mut i = from;
+    while i <= last {
+        match hay[i..=last].iter().position(|&c| c == first) {
+            None => return -1,
+            Some(p) => i += p,
+        }
+        if hay[i + 1..i + needle.len()] == *rest {
+            return i as i32;
+        }
+        i += 1;
+    }
+    -1
 }
 
 pub fn index_of_char(this: Ref, c: i32) -> JResult<i32> {

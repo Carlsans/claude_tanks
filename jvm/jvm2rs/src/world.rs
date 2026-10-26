@@ -210,6 +210,8 @@ pub struct World {
     pub missing: BTreeSet<String>,
     /// Library classes left out by the policy.
     pub excluded: BTreeSet<String>,
+    /// The one implementation a virtual call can reach, per (class, signature).
+    pub devirtualized: HashMap<(String, String), Option<Impl>>,
 }
 
 impl World {
@@ -222,6 +224,7 @@ impl World {
             layouts: HashMap::new(),
             missing: BTreeSet::new(),
             excluded: BTreeSet::new(),
+            devirtualized: HashMap::new(),
         }
     }
 

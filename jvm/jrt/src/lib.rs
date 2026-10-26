@@ -203,49 +203,63 @@ pub fn identity_hash(o: &Rc<Obj>) -> i32 {
 // Instance fields. Primitives are kept as bits: ints sign-extended, floats
 // and doubles by their IEEE bits.
 
+/// Primitive field `i` (the translator took `i` from the class's layout).
+#[inline]
+fn prim(o: &Rc<Obj>, i: usize) -> &Cell<u64> {
+    debug_assert!(i < o.prims.len());
+    unsafe { o.prims.get_unchecked(i) }
+}
+
 #[inline]
 pub fn gf_i(r: &Ref, i: usize) -> JResult<i32> {
-    Ok(nn(r)?.prims[i].get() as i32)
+    Ok(prim(nn(r)?, i).get() as i32)
 }
 #[inline]
 pub fn gf_j(r: &Ref, i: usize) -> JResult<i64> {
-    Ok(nn(r)?.prims[i].get() as i64)
+    Ok(prim(nn(r)?, i).get() as i64)
 }
 #[inline]
 pub fn gf_f(r: &Ref, i: usize) -> JResult<f32> {
-    Ok(f32::from_bits(nn(r)?.prims[i].get() as u32))
+    Ok(f32::from_bits(prim(nn(r)?, i).get() as u32))
 }
 #[inline]
 pub fn gf_d(r: &Ref, i: usize) -> JResult<f64> {
-    Ok(f64::from_bits(nn(r)?.prims[i].get()))
+    Ok(f64::from_bits(prim(nn(r)?, i).get()))
 }
 #[inline]
 pub fn gf_a(r: &Ref, i: usize) -> JResult<Ref> {
-    Ok(nn(r)?.refs[i].borrow().clone())
+    let o = nn(r)?;
+    debug_assert!(i < o.refs.len());
+    // Nothing runs while the field is read, so it is never borrowed.
+    Ok(unsafe { (*o.refs.get_unchecked(i).as_ptr()).clone() })
 }
 #[inline]
 pub fn pf_i(r: &Ref, i: usize, v: i32) -> JResult<()> {
-    nn(r)?.prims[i].set(v as i64 as u64);
+    prim(nn(r)?, i).set(v as i64 as u64);
     Ok(())
 }
 #[inline]
 pub fn pf_j(r: &Ref, i: usize, v: i64) -> JResult<()> {
-    nn(r)?.prims[i].set(v as u64);
+    prim(nn(r)?, i).set(v as u64);
     Ok(())
 }
 #[inline]
 pub fn pf_f(r: &Ref, i: usize, v: f32) -> JResult<()> {
-    nn(r)?.prims[i].set(u64::from(v.to_bits()));
+    prim(nn(r)?, i).set(u64::from(v.to_bits()));
     Ok(())
 }
 #[inline]
 pub fn pf_d(r: &Ref, i: usize, v: f64) -> JResult<()> {
-    nn(r)?.prims[i].set(v.to_bits());
+    prim(nn(r)?, i).set(v.to_bits());
     Ok(())
 }
 #[inline]
 pub fn pf_a(r: &Ref, i: usize, v: Ref) -> JResult<()> {
-    *nn(r)?.refs[i].borrow_mut() = v;
+    let o = nn(r)?;
+    debug_assert!(i < o.refs.len());
+    // The old value is dropped after the new one is in place.
+    let old = std::mem::replace(unsafe { &mut *o.refs.get_unchecked(i).as_ptr() }, v);
+    drop(old);
     Ok(())
 }
 
@@ -416,14 +430,14 @@ pub fn multianewarray(c: &'static Class, dims: &[i32]) -> JResult<Ref> {
 pub fn alen(r: &Ref) -> JResult<i32> {
     let o = nn(r)?;
     Ok(match &o.ext {
-        Ext::Bytes(v) => v.borrow().len(),
-        Ext::Chars(v) => v.borrow().len(),
-        Ext::Shorts(v) => v.borrow().len(),
-        Ext::Ints(v) => v.borrow().len(),
-        Ext::Longs(v) => v.borrow().len(),
-        Ext::Floats(v) => v.borrow().len(),
-        Ext::Doubles(v) => v.borrow().len(),
-        Ext::Refs(v) => v.borrow().len(),
+        Ext::Bytes(v) => unsafe { (*v.as_ptr()).len() },
+        Ext::Chars(v) => unsafe { (*v.as_ptr()).len() },
+        Ext::Shorts(v) => unsafe { (*v.as_ptr()).len() },
+        Ext::Ints(v) => unsafe { (*v.as_ptr()).len() },
+        Ext::Longs(v) => unsafe { (*v.as_ptr()).len() },
+        Ext::Floats(v) => unsafe { (*v.as_ptr()).len() },
+        Ext::Doubles(v) => unsafe { (*v.as_ptr()).len() },
+        Ext::Refs(v) => unsafe { (*v.as_ptr()).len() },
         _ => panic!("arraylength on {}", o.class.name),
     } as i32)
 }
@@ -441,7 +455,8 @@ macro_rules! array_access {
         pub fn $load(r: &Ref, i: i32) -> JResult<$t> {
             match &nn(r)?.ext {
                 Ext::$variant(v) => {
-                    let v = v.borrow();
+                    // Nothing runs while an element is read or written.
+                    let v = unsafe { &*v.as_ptr() };
                     v.get(i as usize).cloned().ok_or_else(|| aioobe(i, v.len()))
                 }
                 _ => panic!("array type mismatch"),
@@ -451,7 +466,7 @@ macro_rules! array_access {
         pub fn $store(r: &Ref, i: i32, x: $t) -> JResult<()> {
             match &nn(r)?.ext {
                 Ext::$variant(v) => {
-                    let mut v = v.borrow_mut();
+                    let v = unsafe { &mut *v.as_ptr() };
                     let n = v.len();
                     *v.get_mut(i as usize).ok_or_else(|| aioobe(i, n))? = x;
                     Ok(())
@@ -474,7 +489,7 @@ array_access!(ald_d ast_d Doubles f64);
 pub fn ald_a(r: &Ref, i: i32) -> JResult<Ref> {
     match &nn(r)?.ext {
         Ext::Refs(v) => {
-            let v = v.borrow();
+            let v = unsafe { &*v.as_ptr() };
             v.get(i as usize).cloned().ok_or_else(|| aioobe(i, v.len()))
         }
         _ => panic!("array type mismatch"),
@@ -492,9 +507,10 @@ pub fn ast_a(r: &Ref, i: i32, x: Ref) -> JResult<()> {
     }
     match &o.ext {
         Ext::Refs(v) => {
-            let mut v = v.borrow_mut();
+            let v = unsafe { &mut *v.as_ptr() };
             let n = v.len();
-            *v.get_mut(i as usize).ok_or_else(|| aioobe(i, n))? = x;
+            let old = std::mem::replace(v.get_mut(i as usize).ok_or_else(|| aioobe(i, n))?, x);
+            drop(old);
             Ok(())
         }
         _ => panic!("array type mismatch"),
@@ -571,6 +587,18 @@ pub fn vslot(o: &Rc<Obj>, slot: usize) -> JResult<*const ()> {
         Some(p) if !p.is_null() => Ok(p),
         _ => Err(throw(&C_java_lang_AbstractMethodError, o.class.name)),
     }
+}
+
+/// `vslot` of a possibly null reference.
+#[inline]
+pub fn vslot_ref(r: &Ref, slot: usize) -> JResult<*const ()> {
+    vslot(nn(r)?, slot)
+}
+
+/// `islot` of a possibly null reference.
+#[inline]
+pub fn islot_ref(r: &Ref, iface: &'static Class, idx: usize) -> JResult<*const ()> {
+    islot(nn(r)?, iface, idx)
 }
 
 /// Method `idx` of interface `iface` on an object.

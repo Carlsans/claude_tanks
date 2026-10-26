@@ -376,6 +376,8 @@ struct MethodGen<'a> {
     /// Variables used: (name, kind).
     vars: BTreeSet<(String, K)>,
     st: Vec<K>,
+    /// Per stack entry: the local it stands for, loaded but not copied yet.
+    alias: Vec<Option<String>>,
     blocks: &'a Blocks,
     /// Handler list (indices into the code's handlers) per dispatch id.
     dispatch: Vec<Vec<usize>>,
@@ -394,6 +396,9 @@ pub struct Extras {
 
 const DISPATCH_BASE: u32 = 1 << 30;
 
+/// Bytecode bytes up to which a translated method is marked `#[inline]`.
+const SMALL_METHOD: usize = 48;
+
 impl MethodGen<'_> {
     fn sv(&mut self, i: usize, k: K) -> String {
         let n = format!("s{i}{}", k.letter());
@@ -409,19 +414,80 @@ impl MethodGen<'_> {
 
     fn push(&mut self, k: K) -> String {
         self.st.push(k);
+        self.alias.push(None);
         self.sv(self.st.len() - 1, k)
+    }
+
+    /// Pushes a reference that is just local `l`: nothing is copied until a
+    /// use needs its own reference.
+    fn push_alias(&mut self, l: String) {
+        self.st.push(K::A);
+        self.alias.push(Some(l));
+    }
+
+    /// Copies a stack entry that stands for a local into its own variable.
+    fn materialize(&mut self, i: usize) {
+        if let Some(l) = self.alias[i].take() {
+            let v = self.sv(i, K::A);
+            self.line(&format!("{v} = {l}.clone();"));
+        }
+    }
+
+    /// All entries that stand for locals get their own copy (before the
+    /// stack leaves the block).
+    fn flush(&mut self) {
+        for i in 0..self.st.len() {
+            self.materialize(i);
+        }
+    }
+
+    /// Before local `l` changes.
+    fn spill(&mut self, l: &str) {
+        for i in 0..self.st.len() {
+            if self.alias[i].as_deref() == Some(l) {
+                self.materialize(i);
+            }
+        }
     }
 
     /// Pops the top value: its variable and kind.
     fn pop(&mut self) -> (String, K) {
+        let i = self.st.len() - 1;
+        self.materialize(i);
         let k = self.st.pop().expect("analysis checked the stack");
+        self.alias.pop();
         (self.sv(self.st.len(), k), k)
     }
 
     /// The top value moved out (references are taken, leaving null).
     fn pop_val(&mut self) -> String {
+        let i = self.st.len() - 1;
+        if let Some(l) = self.alias[i].take() {
+            self.st.pop();
+            self.alias.pop();
+            return format!("{l}.clone()");
+        }
         let (v, k) = self.pop();
         if k == K::A { format!("{v}.take()") } else { v }
+    }
+
+    /// The top reference as an expression of type `&Ref`.
+    fn pop_ref(&mut self) -> String {
+        let i = self.st.len() - 1;
+        if let Some(l) = self.alias[i].take() {
+            self.st.pop();
+            self.alias.pop();
+            return format!("&{l}");
+        }
+        let (v, _) = self.pop();
+        format!("&{v}.take()")
+    }
+
+    /// The top reference's variable, left on the stack.
+    fn peek(&mut self) -> String {
+        let i = self.st.len() - 1;
+        self.materialize(i);
+        self.sv(i, K::A)
     }
 
     fn line(&mut self, s: &str) {
@@ -539,19 +605,23 @@ impl MethodGen<'_> {
             }
             Insn::Load(k, n) => {
                 let l = self.lv(*n, *k);
-                let v = self.push(*k);
-                let clone = if *k == K::A { ".clone()" } else { "" };
-                self.line(&format!("{v} = {l}{clone};"));
+                if *k == K::A {
+                    self.push_alias(l);
+                } else {
+                    let v = self.push(*k);
+                    self.line(&format!("{v} = {l};"));
+                }
             }
             Insn::Store(_, n) => {
-                let (v, k) = self.pop();
+                let k = *self.st.last().expect("analysis checked the stack");
+                let v = self.pop_val();
                 let l = self.lv(*n, k);
-                let take = if k == K::A { ".take()" } else { "" };
-                self.line(&format!("{l} = {v}{take};"));
+                self.spill(&l);
+                self.line(&format!("{l} = {v};"));
             }
             Insn::ArrLoad(e) => {
                 let idx = self.pop_val();
-                let (arr, _) = self.pop();
+                let arr = self.pop_ref();
                 let (f, cast) = match e {
                     Elem::B => ("ald_b", " as i32"),
                     Elem::C => ("ald_c", " as i32"),
@@ -562,14 +632,14 @@ impl MethodGen<'_> {
                     Elem::D => ("ald_d", ""),
                     Elem::A => ("ald_a", ""),
                 };
-                let call = self.tr(&format!("jrt::{f}(&{arr}.take(), {idx})"), pc);
+                let call = self.tr(&format!("jrt::{f}({arr}, {idx})"), pc);
                 let v = self.push(e.kind());
                 self.line(&format!("{v} = {call}{cast};"));
             }
             Insn::ArrStore(e) => {
                 let val = self.pop_val();
                 let idx = self.pop_val();
-                let (arr, _) = self.pop();
+                let arr = self.pop_ref();
                 let (f, val) = match e {
                     Elem::B => ("ast_b", format!("{val} as i8")),
                     Elem::C => ("ast_c", format!("{val} as u16")),
@@ -580,12 +650,17 @@ impl MethodGen<'_> {
                     Elem::D => ("ast_d", val),
                     Elem::A => ("ast_a", val),
                 };
-                let call = self.tr(&format!("jrt::{f}(&{arr}.take(), {idx}, {val})"), pc);
+                let call = self.tr(&format!("jrt::{f}({arr}, {idx}, {val})"), pc);
                 self.line(&format!("{call};"));
             }
             Insn::Pop => {
-                let v = self.pop_val();
-                self.line(&format!("let _ = {v};"));
+                if self.alias.last().is_some_and(|a| a.is_some()) {
+                    self.st.pop();
+                    self.alias.pop();
+                } else {
+                    let v = self.pop_val();
+                    self.line(&format!("let _ = {v};"));
+                }
             }
             Insn::Pop2 => {
                 let (v, k) = self.pop();
@@ -608,25 +683,36 @@ impl MethodGen<'_> {
                 let n = g1 + g2;
                 let base = self.st.len() - n;
                 let old: Vec<K> = self.st[base..].to_vec();
+                let old_alias: Vec<Option<String>> = self.alias[base..].to_vec();
                 // New order, as indices into `old`.
                 let order: Vec<usize> = if matches!(insn, Insn::Swap) {
                     vec![1, 0]
                 } else {
                     (g2..n).chain(0..n).collect()
                 };
-                let mut code = String::from("{ ");
+                // Entries that stand for a local stay that way, copy-free.
+                let mut code = String::new();
                 for (t, &o) in order.iter().enumerate() {
-                    let v = self.sv(base + o, old[o]);
-                    let clone = if old[o] == K::A { ".clone()" } else { "" };
-                    write!(code, "let t{t} = {v}{clone}; ").unwrap();
+                    if old_alias[o].is_none() {
+                        let v = self.sv(base + o, old[o]);
+                        let clone = if old[o] == K::A { ".clone()" } else { "" };
+                        write!(code, "let t{t} = {v}{clone}; ").unwrap();
+                    }
                 }
                 self.st.truncate(base);
+                self.alias.truncate(base);
                 for (t, &o) in order.iter().enumerate() {
-                    let v = self.push(old[o]);
-                    write!(code, "{v} = t{t}; ").unwrap();
+                    match &old_alias[o] {
+                        Some(l) => self.push_alias(l.clone()),
+                        None => {
+                            let v = self.push(old[o]);
+                            write!(code, "{v} = t{t}; ").unwrap();
+                        }
+                    }
                 }
-                code.push('}');
-                self.line(&code);
+                if !code.is_empty() {
+                    self.line(&format!("{{ {code}}}"));
+                }
             }
             Insn::Arith(op, k) => self.arith(*op, *k, pc),
             Insn::Iinc(n, c) => {
@@ -663,33 +749,39 @@ impl MethodGen<'_> {
             }
             Insn::If(c, t) => {
                 let v = self.pop_val();
+                self.flush();
                 let j = self.jump(*t);
                 self.line(&format!("if {v} {} 0 {{ {j} }}", c.rust()));
             }
             Insn::IfIcmp(c, t) => {
                 let b = self.pop_val();
                 let a = self.pop_val();
+                self.flush();
                 let j = self.jump(*t);
                 self.line(&format!("if {a} {} {b} {{ {j} }}", c.rust()));
             }
             Insn::IfAcmp { eq, target } => {
-                let b = self.pop_val();
-                let a = self.pop_val();
+                let b = self.pop_ref();
+                let a = self.pop_ref();
+                self.flush();
                 let j = self.jump(*target);
                 let not = if *eq { "" } else { "!" };
-                self.line(&format!("if {not}jrt::same(&{a}, &{b}) {{ {j} }}"));
+                self.line(&format!("if {not}jrt::same({a}, {b}) {{ {j} }}"));
             }
             Insn::IfNull { null, target } => {
-                let v = self.pop_val();
+                let v = self.pop_ref();
+                self.flush();
                 let j = self.jump(*target);
                 let test = if *null { "is_none" } else { "is_some" };
-                self.line(&format!("if {v}.{test}() {{ {j} }}"));
+                self.line(&format!("if ({v}).{test}() {{ {j} }}"));
             }
             Insn::Goto(t) => {
+                self.flush();
                 let j = self.jump(*t);
                 self.line(&j);
             }
             Insn::Jsr(t) => {
+                self.flush();
                 let r = self.push(K::R);
                 let ret = next_block.expect("jsr returns somewhere");
                 let j = self.jump(*t);
@@ -705,6 +797,7 @@ impl MethodGen<'_> {
                 targets,
             } => {
                 let v = self.pop_val();
+                self.flush();
                 let mut arms = String::new();
                 for (k, t) in targets.iter().enumerate() {
                     write!(
@@ -722,6 +815,7 @@ impl MethodGen<'_> {
             }
             Insn::LookupSwitch { default, pairs } => {
                 let v = self.pop_val();
+                self.flush();
                 let mut arms = String::new();
                 for (key, t) in pairs {
                     write!(arms, "{key} => {}, ", self.blocks.by_pc[t]).unwrap();
@@ -831,8 +925,8 @@ impl MethodGen<'_> {
                 }
             }
             Insn::ArrayLength => {
-                let (a, _) = self.pop();
-                let call = self.tr(&format!("jrt::alen(&{a}.take())"), pc);
+                let a = self.pop_ref();
+                let call = self.tr(&format!("jrt::alen({a})"), pc);
                 let v = self.push(K::I);
                 self.line(&format!("{v} = {call};"));
             }
@@ -845,7 +939,7 @@ impl MethodGen<'_> {
             }
             Insn::CheckCast(i) => {
                 let name = self.cf.class_name(*i).unwrap_or_default();
-                let top = self.sv(self.st.len() - 1, K::A);
+                let top = self.peek();
                 match class_expr(self.world, &name) {
                     Some(c) => {
                         let call = self.tr(&format!("jrt::checkcast(&{top}, {c})"), pc);
@@ -867,16 +961,16 @@ impl MethodGen<'_> {
             }
             Insn::InstanceOf(i) => {
                 let name = self.cf.class_name(*i).unwrap_or_default();
-                let a = self.pop_val();
+                let a = self.pop_ref();
                 let v = self.push(K::I);
                 match class_expr(self.world, &name) {
-                    Some(c) => self.line(&format!("{v} = jrt::instance_of(&{a}, {c}) as i32;")),
+                    Some(c) => self.line(&format!("{v} = jrt::instance_of({a}, {c}) as i32;")),
                     None => self.line(&format!("let _ = {a}; {v} = 0;")),
                 }
             }
             Insn::MonitorEnter | Insn::MonitorExit => {
-                let (a, _) = self.pop();
-                let call = self.tr(&format!("jrt::nn(&{a}.take()).map(|_| ())"), pc);
+                let a = self.pop_ref();
+                let call = self.tr(&format!("jrt::nn({a}).map(|_| ())"), pc);
                 self.line(&format!("{call};"));
             }
         }
@@ -1035,8 +1129,8 @@ impl MethodGen<'_> {
         };
         let letter = k.letter();
         if get {
-            let (o, _) = self.pop();
-            let call = self.tr(&format!("jrt::gf_{letter}(&{o}.take(), {idx})"), pc);
+            let o = self.pop_ref();
+            let call = self.tr(&format!("jrt::gf_{letter}({o}, {idx})"), pc);
             let v = self.push(k);
             self.line(&format!("{v} = {call};"));
         } else {
@@ -1048,8 +1142,8 @@ impl MethodGen<'_> {
                 "S" => format!("{v} as i16 as i32"),
                 _ => v,
             };
-            let (o, _) = self.pop();
-            let call = self.tr(&format!("jrt::pf_{letter}(&{o}.take(), {idx}, {v})"), pc);
+            let o = self.pop_ref();
+            let call = self.tr(&format!("jrt::pf_{letter}({o}, {idx}, {v})"), pc);
             self.line(&format!("{call};"));
         }
     }
@@ -1118,9 +1212,29 @@ impl MethodGen<'_> {
                 let recv = recv.unwrap();
                 // Private and final methods, and methods of final or native
                 // direct kind, need no table.
-                let direct = info.access & (access::PRIVATE | access::FINAL) != 0
+                let mut direct = info.access & (access::PRIVATE | access::FINAL) != 0
                     || self.is_final_class(&decl);
-                let mut all = vec!["Some(o.clone())".to_string()];
+                // Lambdas are instances of no listed class: their `Object`
+                // methods and interface methods stay dynamic.
+                let mut decl = decl;
+                let mut info = info;
+                if !direct
+                    && kind == Invoke::Virtual
+                    && class != jrt::spec::OBJECT
+                    && !self.world.is_interface(&decl)
+                    // The runtime makes exceptions and numbers itself.
+                    && !self.world.is_native(&class)
+                    && !self.world.is_subtype(&class, "java/lang/Throwable")
+                    && !self.world.is_subtype(&class, "java/lang/Number")
+                    && let Some(imp) = self.only_target(&class, &s)
+                    && self.callable(&imp)
+                    && let Some(mi) = self.world.declared(&imp.class, &s)
+                {
+                    decl = imp.class;
+                    info = mi;
+                    direct = true;
+                }
+                let mut all = vec!["rc".to_string()];
                 all.extend(args);
                 if direct {
                     let imp = Impl {
@@ -1131,11 +1245,8 @@ impl MethodGen<'_> {
                         return fail(self, "untranslated method");
                     }
                     let fp = self.world.fn_path(&imp);
-                    let rc = format!(
-                        "let rc = {recv}; let o = {}; ",
-                        self.tr("jrt::nn(&rc).cloned()", pc)
-                    );
-                    self.line(&rc);
+                    let check = self.tr("jrt::nn(&rc).map(|_| ())", pc);
+                    self.line(&format!("let rc = {recv}; {check};"));
                     format!("{fp}({})", all.join(", "))
                 } else if self.world.is_interface(&decl) {
                     let idx = self
@@ -1147,16 +1258,11 @@ impl MethodGen<'_> {
                         return fail(self, "method");
                     };
                     let c = self.world.class_static(&decl);
-                    let pre = format!(
-                        "let rc = {recv}; let o = {}; ",
-                        self.tr("jrt::nn(&rc).cloned()", pc)
-                    );
-                    self.line(&pre);
-                    let f = self.tr(&format!("jrt::islot(&o, &{c}, {idx})"), pc);
-                    format!(
-                        "{{ let f: {fn_ty} = unsafe {{ std::mem::transmute({f}) }}; f({}) }}",
-                        all.join(", ")
-                    )
+                    let f = self.tr(&format!("jrt::islot_ref(&rc, &{c}, {idx})"), pc);
+                    self.line(&format!(
+                        "let rc = {recv}; let f: {fn_ty} = unsafe {{ std::mem::transmute({f}) }};"
+                    ));
+                    format!("f({})", all.join(", "))
                 } else {
                     let slot = self
                         .world
@@ -1165,16 +1271,11 @@ impl MethodGen<'_> {
                     let Some(slot) = slot else {
                         return fail(self, "method");
                     };
-                    let pre = format!(
-                        "let rc = {recv}; let o = {}; ",
-                        self.tr("jrt::nn(&rc).cloned()", pc)
-                    );
-                    self.line(&pre);
-                    let f = self.tr(&format!("jrt::vslot(&o, {slot})"), pc);
-                    format!(
-                        "{{ let f: {fn_ty} = unsafe {{ std::mem::transmute({f}) }}; f({}) }}",
-                        all.join(", ")
-                    )
+                    let f = self.tr(&format!("jrt::vslot_ref(&rc, {slot})"), pc);
+                    self.line(&format!(
+                        "let rc = {recv}; let f: {fn_ty} = unsafe {{ std::mem::transmute({f}) }};"
+                    ));
+                    format!("f({})", all.join(", "))
                 }
             }
         };
@@ -1282,6 +1383,44 @@ impl MethodGen<'_> {
         }
     }
 
+    /// The only method a virtual call of `sig` on `class` can run, if the
+    /// classes that are ever instantiated agree on one (a closed-world
+    /// analysis, like HotSpot's class hierarchy analysis).
+    fn only_target(&mut self, class: &str, sig: &str) -> Option<Impl> {
+        let key = (class.to_string(), sig.to_string());
+        if let Some(t) = self.world.devirtualized.get(&key) {
+            return t.clone();
+        }
+        let mut found: Option<Impl> = None;
+        let mut single = true;
+        let classes: Vec<String> = self.reach.instantiated.iter().cloned().collect();
+        for k in classes {
+            if !self.world.is_subtype(&k, class) {
+                continue;
+            }
+            match self.world.resolve_method(&k, sig) {
+                Some((decl, info)) if info.concrete => {
+                    let imp = Impl {
+                        class: decl,
+                        sig: sig.to_string(),
+                    };
+                    match &found {
+                        None => found = Some(imp),
+                        Some(f) if *f == imp => {}
+                        _ => single = false,
+                    }
+                }
+                _ => single = false,
+            }
+            if !single {
+                break;
+            }
+        }
+        let target = if single { found } else { None };
+        self.world.devirtualized.insert(key, target.clone());
+        target
+    }
+
     /// Whether an implementation exists in the output (native, or a
     /// reachable translated method).
     fn callable(&mut self, imp: &Impl) -> bool {
@@ -1318,8 +1457,18 @@ fn method_fn(
         param_vars.insert(v);
         slot += if k.wide() { 2 } else { 1 };
     }
+    // Small methods (accessors, wrappers) are inlined across crates.
+    let inline = if m
+        .code
+        .as_ref()
+        .is_some_and(|c| c.bytes.len() <= SMALL_METHOD)
+    {
+        "#[inline]\n"
+    } else {
+        ""
+    };
     let header = format!(
-        "/// `{}{}`\npub fn {name}({}) -> jrt::JResult<{ret_ty}> {{\n",
+        "/// `{}{}`\n{inline}pub fn {name}({}) -> jrt::JResult<{ret_ty}> {{\n",
         m.name,
         m.desc,
         sig_params.join(", ")
@@ -1391,6 +1540,7 @@ fn method_body(
         vars: BTreeSet::new(),
         st: Vec::new(),
         blocks: &blocks,
+        alias: Vec::new(),
         dispatch: Vec::new(),
         handlers: &code.handlers,
         notes,
@@ -1402,6 +1552,7 @@ fn method_body(
             continue;
         };
         g.st = entry.clone();
+        g.alias = vec![None; entry.len()];
         g.out.clear();
         let mut k = index[start];
         let next_start = blocks.starts.get(b + 1).copied();
@@ -1418,6 +1569,7 @@ fn method_body(
             k += 1;
             match insns.get(k) {
                 Some((p, _)) if Some(*p) == next_start => {
+                    g.flush();
                     let j = g.jump(*p);
                     g.line(&j);
                     break;
@@ -1563,7 +1715,7 @@ pub fn class_module(
         };
         writeln!(out, "    pub {}: {ty},", mangle::field(&f.name, &f.desc)).unwrap();
     }
-    out.push_str("}\n\nthread_local! {\n    pub static S: Statics = Statics {\n        state: Cell::new(0),\n");
+    out.push_str("}\n\nthread_local! {\n    pub static S: Statics = const { Statics {\n        state: Cell::new(0),\n");
     let mut const_strings = Vec::new();
     for f in &statics {
         let k = desc::kind(&f.desc);
@@ -1589,11 +1741,11 @@ pub fn class_module(
         };
         writeln!(out, "        {fname}: {init},").unwrap();
     }
-    out.push_str("    };\n}\n\n");
+    out.push_str("    } };\n}\n\n");
     // init(): superclass first, then <clinit>. Re-entry (and failure)
     // returns at once, as the JVM's initialization lock does for its own
     // thread.
-    out.push_str("/// Initializes the class (once per thread).\npub fn init() -> jrt::JResult<()> {\n    if S.with(|s| s.state.get()) != 0 {\n        return Ok(());\n    }\n    S.with(|s| s.state.set(1));\n");
+    out.push_str("/// Initializes the class (once per thread).\n#[inline]\npub fn init() -> jrt::JResult<()> {\n    if S.with(|s| s.state.get()) != 0 {\n        return Ok(());\n    }\n    init_once()\n}\n\n#[inline(never)]\nfn init_once() -> jrt::JResult<()> {\n    S.with(|s| s.state.set(1));\n");
     for (f, l) in &const_strings {
         writeln!(out, "    S.with(|s| *s.{f}.borrow_mut() = jrt::lit({l}));").unwrap();
     }
@@ -1619,7 +1771,7 @@ pub fn class_module(
         if k == K::A {
             writeln!(
                 out,
-                "pub fn gs_{fname}() -> jrt::JResult<jrt::Ref> {{\n    init()?;\n    Ok(S.with(|s| s.{fname}.borrow().clone()))\n}}\n\npub fn ps_{fname}(v: jrt::Ref) -> jrt::JResult<()> {{\n    init()?;\n    S.with(|s| *s.{fname}.borrow_mut() = v);\n    Ok(())\n}}\n"
+                "#[inline]\npub fn gs_{fname}() -> jrt::JResult<jrt::Ref> {{\n    init()?;\n    Ok(S.with(|s| s.{fname}.borrow().clone()))\n}}\n\n#[inline]\npub fn ps_{fname}(v: jrt::Ref) -> jrt::JResult<()> {{\n    init()?;\n    S.with(|s| *s.{fname}.borrow_mut() = v);\n    Ok(())\n}}\n"
             )
             .unwrap();
         } else {
@@ -1632,7 +1784,7 @@ pub fn class_module(
             };
             writeln!(
                 out,
-                "pub fn gs_{fname}() -> jrt::JResult<{ty}> {{\n    init()?;\n    Ok(S.with(|s| s.{fname}.get()))\n}}\n\npub fn ps_{fname}(v: {ty}) -> jrt::JResult<()> {{\n    init()?;\n    S.with(|s| s.{fname}.set({v}));\n    Ok(())\n}}\n"
+                "#[inline]\npub fn gs_{fname}() -> jrt::JResult<{ty}> {{\n    init()?;\n    Ok(S.with(|s| s.{fname}.get()))\n}}\n\n#[inline]\npub fn ps_{fname}(v: {ty}) -> jrt::JResult<()> {{\n    init()?;\n    S.with(|s| s.{fname}.set({v}));\n    Ok(())\n}}\n"
             )
             .unwrap();
         }

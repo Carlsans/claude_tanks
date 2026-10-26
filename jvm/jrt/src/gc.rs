@@ -16,10 +16,13 @@ use std::rc::Weak;
 thread_local! {
     static ALL: RefCell<Vec<Weak<Obj>>> = const { RefCell::new(Vec::new()) };
     static SINCE: Cell<usize> = const { Cell::new(0) };
+    static EVERY: Cell<usize> = const { Cell::new(MIN_EVERY) };
 }
 
-/// Registrations between collections.
-const EVERY: usize = 100_000;
+/// Fewest registrations between collections. A collection visits every
+/// registered object, so the wait also grows with what survived: the cost
+/// per object made stays constant however large the robot's data is.
+const MIN_EVERY: usize = 100_000;
 
 pub fn register(o: &Rc<Obj>) {
     ALL.with(|a| a.borrow_mut().push(Rc::downgrade(o)));
@@ -28,7 +31,7 @@ pub fn register(o: &Rc<Obj>) {
 
 /// Collects if enough objects were made since the last collection.
 pub fn maybe_collect() -> usize {
-    if SINCE.with(|s| s.get()) < EVERY {
+    if SINCE.with(|s| s.get()) < EVERY.with(|e| e.get()) {
         return 0;
     }
     collect()
@@ -124,6 +127,7 @@ pub fn collect() -> usize {
                 a.push(Rc::downgrade(o));
             }
         }
+        EVERY.with(|e| e.set(MIN_EVERY.max(3 * a.len())));
     });
     cleared
 }
