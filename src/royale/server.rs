@@ -177,6 +177,8 @@ fn serve(
     let (tx, rx) = unbounded::<String>();
     let session = format!("claude-tanks-{id}");
     let hello = protocol::server_handshake(&session, &Setup::default());
+    let log = WireLog::open(id);
+    log.write(true, &hello.to_string());
     if writer
         .send(tungstenite::Message::text(hello.to_string()))
         .is_err()
@@ -192,8 +194,10 @@ fn serve(
         },
     );
     // The writer ends when the connection is forgotten (its sender dropped).
+    let to_bot = log.clone();
     std::thread::spawn(move || {
         while let Ok(m) = rx.recv() {
+            to_bot.write(true, &m);
             if writer.send(tungstenite::Message::text(m)).is_err() {
                 break;
             }
@@ -202,6 +206,7 @@ fn serve(
     while !stop.load(Ordering::Relaxed) {
         match reader.read() {
             Ok(tungstenite::Message::Text(t)) => {
+                log.write(false, t.as_str());
                 match serde_json::from_str::<FromBot>(t.as_str()) {
                     Ok(FromBot::BotHandshake(h)) => {
                         if let Some(c) = conns.lock().unwrap().get_mut(&id) {
@@ -224,6 +229,43 @@ fn serve(
     }
     conns.lock().unwrap().remove(&id);
     let _ = in_tx.send((id, Incoming::Closed));
+}
+
+/// With `ROYALE_WIRE_LOG` set to a folder, every message between the
+/// server and a bot, as JSON lines: `<pid>-<conn>.to_bot.jsonl` and
+/// `<pid>-<conn>.from_bot.jsonl` (to replay a battle into a translated robot
+/// and compare what it answers).
+/// Each line from the bot starts with how many messages the server had sent
+/// it by then and a tab, so answers can be matched to the turn they answer.
+#[derive(Clone)]
+struct WireLog(Option<Arc<Mutex<(std::fs::File, std::fs::File, u64)>>>);
+
+impl WireLog {
+    fn open(id: u64) -> WireLog {
+        let Some(dir) = std::env::var_os("ROYALE_WIRE_LOG").map(PathBuf::from) else {
+            return WireLog(None);
+        };
+        let base = format!("{}-{id}", std::process::id());
+        let open = |s: &str| std::fs::File::create(dir.join(format!("{base}.{s}.jsonl")));
+        match (open("to_bot"), open("from_bot")) {
+            (Ok(a), Ok(b)) => WireLog(Some(Arc::new(Mutex::new((a, b, 0))))),
+            _ => WireLog(None),
+        }
+    }
+
+    fn write(&self, to_bot: bool, msg: &str) {
+        use std::io::Write;
+        if let Some(f) = &self.0 {
+            let mut f = f.lock().unwrap();
+            if to_bot {
+                f.2 += 1;
+                let _ = writeln!(f.0, "{msg}");
+            } else {
+                let sent = f.2;
+                let _ = writeln!(f.1, "{sent}\t{msg}");
+            }
+        }
+    }
 }
 
 /// One side of a battle.

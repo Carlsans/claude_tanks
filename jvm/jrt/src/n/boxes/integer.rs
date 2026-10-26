@@ -111,3 +111,39 @@ pub fn equals(this: Ref, o: Ref) -> JResult<i32> {
 pub fn compare_to(this: Ref, o: Ref) -> JResult<i32> {
     compare(get(&this)?, get(&o)?)
 }
+
+pub fn parse_radix(s: Ref, radix: i32) -> JResult<i32> {
+    let t = String::from_utf16_lossy(crate::n::string::of(&s).map_err(|_| nfe("null"))?);
+    i32::from_str_radix(&t, radix as u32).map_err(|_| nfe(&t))
+}
+
+pub fn value_of_str_radix(s: Ref, radix: i32) -> JResult<Ref> {
+    value_of(parse_radix(s, radix)?)
+}
+
+pub fn to_string_radix(v: i32, radix: i32) -> JResult<Ref> {
+    let radix = if (2..=36).contains(&radix) {
+        radix as u32
+    } else {
+        10
+    };
+    let neg = v < 0;
+    let mut n = i64::from(v).unsigned_abs();
+    let mut digits = Vec::new();
+    loop {
+        digits.push(std::char::from_digit((n % u64::from(radix)) as u32, radix).unwrap());
+        n /= u64::from(radix);
+        if n == 0 {
+            break;
+        }
+    }
+    if neg {
+        digits.push('-');
+    }
+    Ok(jstr(&digits.iter().rev().collect::<String>()))
+}
+
+/// `Integer.TYPE`: the class object of `int`.
+pub fn type_class() -> JResult<Ref> {
+    Ok(class_object(&PRIM_INT))
+}

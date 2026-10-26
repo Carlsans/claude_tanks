@@ -12,6 +12,8 @@
 
 pub mod fmt;
 pub mod n;
+pub mod reflect;
+pub mod robot;
 pub mod spec;
 pub mod thread;
 
@@ -68,6 +70,9 @@ pub struct Class {
     pub component: Component,
     /// Enum classes: their `values()`, for `Enum.valueOf`.
     pub values: Option<fn() -> JResult<Ref>>,
+    /// Fields and methods declared here, for reflection (`reflect`).
+    pub fields: &'static [reflect::FieldMeta],
+    pub methods: &'static [reflect::MethodMeta],
 }
 
 #[allow(non_upper_case_globals)]
@@ -203,6 +208,8 @@ macro_rules! prim_array_classes {
             ext: None,
             component: Component::Prim($code),
             values: None,
+            fields: &[],
+            methods: &[],
         };)*
         /// The class of arrays of a primitive type (descriptor letter).
         pub fn prim_array_class(code: u8) -> &'static Class {
@@ -213,6 +220,23 @@ macro_rules! prim_array_classes {
         }
     };
 }
+
+/// The class object of `int` (`Integer.TYPE`): a class with no instances.
+pub static PRIM_INT: Class = Class {
+    name: "int",
+    sup: None,
+    ifaces: &[],
+    interface: false,
+    prims: 0,
+    refs: 0,
+    vtable: &[],
+    itable: &[],
+    ext: None,
+    component: Component::None,
+    values: None,
+    fields: &[],
+    methods: &[],
+};
 
 pub static OBJECT_VTABLE: [Fp; 5] = [
     Fp(n::object::equals as *const ()),
@@ -256,6 +280,8 @@ pub fn array_class(elem: &'static Class) -> &'static Class {
         ext: None,
         component: Component::Ref(elem),
         values: None,
+        fields: &[],
+        methods: &[],
     }));
     t.push((key, c));
     c
@@ -452,6 +478,10 @@ pub fn shallow_clone(o: &Rc<Obj>) -> Rc<Obj> {
 
 /// Whether instances of `from` are instances of `to`.
 pub fn is_assignable(from: &'static Class, to: &'static Class) -> bool {
+    // Every reference type is an Object, interfaces and arrays included.
+    if std::ptr::eq(to, &C_java_lang_Object) {
+        return true;
+    }
     let mut c = Some(from);
     while let Some(k) = c {
         if std::ptr::eq(k, to) || k.ifaces.iter().any(|i| std::ptr::eq(*i, to)) {
@@ -712,6 +742,35 @@ pub fn lit(s: &'static [u16]) -> Ref {
         t.borrow_mut().insert(key, o.clone());
         o
     }))
+}
+
+static MISSING_CLASSES: Mutex<Vec<&'static Class>> = Mutex::new(Vec::new());
+
+/// A stand-in for a class the translation left out, so that `X.class`
+/// still names something (it has no instances, so comparisons and type
+/// checks with it fail as they should).
+pub fn missing_class(name: &'static str) -> &'static Class {
+    let mut t = MISSING_CLASSES.lock().unwrap();
+    if let Some(c) = t.iter().find(|c| c.name == name) {
+        return c;
+    }
+    let c: &'static Class = Box::leak(Box::new(Class {
+        name,
+        sup: Some(&C_java_lang_Object),
+        ifaces: &[],
+        interface: false,
+        prims: 0,
+        refs: 0,
+        vtable: &OBJECT_VTABLE,
+        itable: &[],
+        ext: None,
+        component: Component::None,
+        values: None,
+        fields: &[],
+        methods: &[],
+    }));
+    t.push(c);
+    c
 }
 
 /// The `java.lang.Class` object of a class (`ldc` of a class, `getClass`).

@@ -1248,6 +1248,7 @@ name = "jrt"
 version = "0.1.0"
 dependencies = [
  "corosensei",
+ "serde_json",
 ]
 
 [[package]]
@@ -1266,6 +1267,7 @@ name = "jvm2rs"
 version = "0.1.0"
 dependencies = [
  "jrt",
+ "serde_json",
  "zip",
 ]
 

@@ -2,13 +2,16 @@
 //! receiver first; booleans, bytes, chars and shorts travel as `i32`, as on
 //! the JVM's operand stack.
 
+pub mod awt;
 pub mod boxes;
 pub mod builder;
 pub mod class;
 pub mod enums;
 pub mod format;
 pub mod iface;
+pub mod json;
 pub mod math;
+pub mod net;
 pub mod object;
 pub mod print;
 pub mod random;

@@ -243,3 +243,45 @@ fn next(bits: u32) -> i64 {
 pub fn random() -> JResult<f64> {
     Ok(((next(26) << 27) + next(27)) as f64 * (1.0 / (1u64 << 53) as f64))
 }
+
+fn overflow(kind: &str) -> Throw {
+    throw(
+        &C_java_lang_ArithmeticException,
+        &format!("{kind} overflow"),
+    )
+}
+
+pub fn add_exact_i(a: i32, b: i32) -> JResult<i32> {
+    a.checked_add(b).ok_or_else(|| overflow("integer"))
+}
+pub fn add_exact_j(a: i64, b: i64) -> JResult<i64> {
+    a.checked_add(b).ok_or_else(|| overflow("long"))
+}
+pub fn sub_exact_i(a: i32, b: i32) -> JResult<i32> {
+    a.checked_sub(b).ok_or_else(|| overflow("integer"))
+}
+pub fn sub_exact_j(a: i64, b: i64) -> JResult<i64> {
+    a.checked_sub(b).ok_or_else(|| overflow("long"))
+}
+pub fn mul_exact_i(a: i32, b: i32) -> JResult<i32> {
+    a.checked_mul(b).ok_or_else(|| overflow("integer"))
+}
+pub fn mul_exact_j(a: i64, b: i64) -> JResult<i64> {
+    a.checked_mul(b).ok_or_else(|| overflow("long"))
+}
+pub fn to_int_exact(a: i64) -> JResult<i32> {
+    i32::try_from(a).map_err(|_| overflow("integer"))
+}
+
+pub fn floor_div_j(a: i64, b: i64) -> JResult<i64> {
+    let q = ldiv(a, b)?;
+    Ok(if (a ^ b) < 0 && q.wrapping_mul(b) != a {
+        q - 1
+    } else {
+        q
+    })
+}
+
+pub fn floor_mod_j(a: i64, b: i64) -> JResult<i64> {
+    Ok(a.wrapping_sub(floor_div_j(a, b)?.wrapping_mul(b)))
+}

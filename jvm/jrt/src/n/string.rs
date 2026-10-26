@@ -344,54 +344,44 @@ pub fn format(fmt: Ref, args: Ref) -> JResult<Ref> {
     Ok(jstr(&crate::n::format::format_str(&fmt, &args)?))
 }
 
-/// What `split` can do without a regular-expression engine: a literal
-/// separator (Java's own fast path: one character, or a backslash and a
-/// non-alphanumeric character), `\s+`, `\s*,\s*`-style trims are not
-/// covered and split on the literal text instead.
-enum Sep {
-    Literal(Vec<u16>),
-    Whitespace,
+/// `java.util.regex.Pattern`, when the program has it (translated from the
+/// JDK); string methods taking a regular expression go through it.
+fn pattern() -> Option<&'static Class> {
+    crate::reflect::class_named("java/util/regex/Pattern")
 }
 
-fn separator(p: &[u16]) -> Sep {
-    let s = String::from_utf16_lossy(p);
-    match s.as_str() {
-        "\\s+" | "\\s" | " +" => Sep::Whitespace,
-        _ => {
-            if let Some(rest) = s.strip_prefix('\\')
-                && rest.chars().count() == 1
-            {
-                return Sep::Literal(rest.encode_utf16().collect());
-            }
-            if s.len() == 3 && s.starts_with('[') && s.ends_with(']') {
-                return Sep::Literal(s[1..2].encode_utf16().collect());
-            }
-            Sep::Literal(p.to_vec())
+fn compile(regex: &Ref) -> JResult<Ref> {
+    let p = pattern().ok_or_else(|| unsupported("java/util/regex/Pattern"))?;
+    Ok(crate::reflect::call(
+        p,
+        "compile(Ljava/lang/String;)Ljava/util/regex/Pattern;",
+        &[crate::reflect::Val::A(regex.clone())],
+    )?
+    .a())
+}
+
+/// Java's own fast path: a separator that is one character other than a
+/// regex metacharacter, or a backslash and a non-alphanumeric character.
+fn literal_separator(p: &[u16]) -> Option<u16> {
+    match p {
+        [c] if !".$|()[{^?*+\\".contains(char::from_u32(u32::from(*c)).unwrap_or('a')) => Some(*c),
+        [b, c]
+            if *b == u16::from(b'\\')
+                && !char::from_u32(u32::from(*c)).is_some_and(|x| x.is_ascii_alphanumeric()) =>
+        {
+            Some(*c)
         }
+        _ => None,
     }
 }
 
-fn split_parts(a: &[u16], sep: &Sep, limit: i32) -> Vec<Vec<u16>> {
+fn split_literal(a: &[u16], sep: u16, limit: i32) -> Vec<Vec<u16>> {
     let mut parts: Vec<Vec<u16>> = Vec::new();
     let mut start = 0;
-    let mut i = 0;
-    while i < a.len() {
-        if limit > 0 && parts.len() as i32 == limit - 1 {
-            break;
-        }
-        let len = match sep {
-            Sep::Literal(l) if !l.is_empty() && a[i..].starts_with(l) => l.len(),
-            Sep::Whitespace if a[i] <= 32 => a[i..].iter().take_while(|&&c| c <= 32).count(),
-            _ => 0,
-        };
-        if len > 0 {
-            // A match at the very start yields no leading empty string only
-            // when it is zero-width (Java 8+); ours never are.
+    for (i, &c) in a.iter().enumerate() {
+        if c == sep && !(limit > 0 && parts.len() as i32 == limit - 1) {
             parts.push(a[start..i].to_vec());
-            i += len;
-            start = i;
-        } else {
-            i += 1;
+            start = i + 1;
         }
     }
     parts.push(a[start..].to_vec());
@@ -407,19 +397,211 @@ fn split_parts(a: &[u16], sep: &Sep, limit: i32) -> Vec<Vec<u16>> {
 }
 
 pub fn split_limit(this: Ref, regex: Ref, limit: i32) -> JResult<Ref> {
-    let parts = split_parts(of(&this)?, &separator(of(&regex)?), limit);
-    let arr = anewarray(&C_java_lang_String, parts.len() as i32)?;
-    for (i, p) in parts.into_iter().enumerate() {
-        ast_a(&arr, i as i32, new_string(p))?;
+    let r = of(&regex)?.to_vec();
+    if let Some(sep) = literal_separator(&r) {
+        let parts = split_literal(of(&this)?, sep, limit);
+        let arr = anewarray(&C_java_lang_String, parts.len() as i32)?;
+        for (i, p) in parts.into_iter().enumerate() {
+            ast_a(&arr, i as i32, new_string(p))?;
+        }
+        return Ok(arr);
     }
-    Ok(arr)
+    let p = compile(&regex)?;
+    Ok(crate::reflect::call_virtual(
+        &p,
+        "split(Ljava/lang/CharSequence;I)[Ljava/lang/String;",
+        &[crate::reflect::Val::A(this), crate::reflect::Val::I(limit)],
+    )?
+    .a())
 }
 
 pub fn split(this: Ref, regex: Ref) -> JResult<Ref> {
     split_limit(this, regex, 0)
 }
 
-/// `matches` without regular expressions: literal equality.
 pub fn matches(this: Ref, regex: Ref) -> JResult<i32> {
-    Ok((of(&this)? == of(&regex)?) as i32)
+    match pattern() {
+        Some(p) => Ok(crate::reflect::call(
+            p,
+            "matches(Ljava/lang/String;Ljava/lang/CharSequence;)Z",
+            &[crate::reflect::Val::A(regex), crate::reflect::Val::A(this)],
+        )?
+        .i()),
+        None => Ok((of(&this)? == of(&regex)?) as i32),
+    }
+}
+
+fn replace_regex(this: Ref, regex: Ref, rep: Ref, sig: &str) -> JResult<Ref> {
+    let p = compile(&regex)?;
+    let m = crate::reflect::call_virtual(
+        &p,
+        "matcher(Ljava/lang/CharSequence;)Ljava/util/regex/Matcher;",
+        &[crate::reflect::Val::A(this)],
+    )?
+    .a();
+    Ok(crate::reflect::call_virtual(&m, sig, &[crate::reflect::Val::A(rep)])?.a())
+}
+
+pub fn replace_all_regex(this: Ref, regex: Ref, rep: Ref) -> JResult<Ref> {
+    replace_regex(
+        this,
+        regex,
+        rep,
+        "replaceAll(Ljava/lang/String;)Ljava/lang/String;",
+    )
+}
+
+pub fn replace_first_regex(this: Ref, regex: Ref, rep: Ref) -> JResult<Ref> {
+    replace_regex(
+        this,
+        regex,
+        rep,
+        "replaceFirst(Ljava/lang/String;)Ljava/lang/String;",
+    )
+}
+
+pub fn is_blank(this: Ref) -> JResult<i32> {
+    Ok(of(&this)?
+        .iter()
+        .all(|&c| c <= 32 || char::from_u32(u32::from(c)).is_some_and(char::is_whitespace))
+        as i32)
+}
+
+pub fn repeat(this: Ref, n: i32) -> JResult<Ref> {
+    if n < 0 {
+        return Err(throw(
+            &C_java_lang_IllegalArgumentException,
+            &format!("count is negative: {n}"),
+        ));
+    }
+    Ok(new_string(of(&this)?.repeat(n as usize)))
+}
+
+pub fn replace_first(this: Ref, from: Ref, to: Ref) -> JResult<Ref> {
+    let (a, f, t) = (of(&this)?, seq_chars(&from)?, seq_chars(&to)?);
+    let i = find(a, &f, 0);
+    if i < 0 || f.is_empty() {
+        return Ok(new_string(a.to_vec()));
+    }
+    let i = i as usize;
+    let mut out = a[..i].to_vec();
+    out.extend_from_slice(&t);
+    out.extend_from_slice(&a[i + f.len()..]);
+    Ok(new_string(out))
+}
+
+fn bytes_array(b: &[u8]) -> JResult<Ref> {
+    let r = newarray(b'B', b.len() as i32)?;
+    if let Ext::Bytes(v) = &nn(&r)?.ext {
+        *v.borrow_mut() = b.iter().map(|&x| x as i8).collect();
+    }
+    Ok(r)
+}
+
+/// Strings encode as UTF-8 whatever the charset asked for.
+pub fn get_bytes(this: Ref) -> JResult<Ref> {
+    bytes_array(String::from_utf16_lossy(of(&this)?).as_bytes())
+}
+
+pub fn get_bytes_charset(this: Ref, _cs: Ref) -> JResult<Ref> {
+    get_bytes(this)
+}
+
+pub fn to_lower_locale(this: Ref, _l: Ref) -> JResult<Ref> {
+    to_lower(this)
+}
+
+pub fn to_upper_locale(this: Ref, _l: Ref) -> JResult<Ref> {
+    to_upper(this)
+}
+
+fn from_bytes(a: &Ref, off: i32, n: Option<i32>) -> JResult<Vec<u16>> {
+    match &nn(a)?.ext {
+        Ext::Bytes(b) => {
+            let b = b.borrow();
+            let off = off.max(0) as usize;
+            let end = n.map_or(b.len(), |n| (off + n.max(0) as usize).min(b.len()));
+            let raw: Vec<u8> = b[off.min(end)..end].iter().map(|&x| x as u8).collect();
+            Ok(String::from_utf8_lossy(&raw).encode_utf16().collect())
+        }
+        _ => panic!("not a byte[]"),
+    }
+}
+
+pub fn init_bytes(this: Ref, a: Ref) -> JResult<()> {
+    let v = from_bytes(&a, 0, None)?;
+    set(&this, v)
+}
+
+pub fn init_bytes_charset(this: Ref, a: Ref, _cs: Ref) -> JResult<()> {
+    init_bytes(this, a)
+}
+
+pub fn init_bytes_range(this: Ref, a: Ref, off: i32, n: i32) -> JResult<()> {
+    let v = from_bytes(&a, off, Some(n))?;
+    set(&this, v)
+}
+
+pub fn init_bytes_range_charset(this: Ref, a: Ref, off: i32, n: i32, _cs: Ref) -> JResult<()> {
+    init_bytes_range(this, a, off, n)
+}
+
+fn charset(name: &str) -> Ref {
+    let c = alloc(&C_java_nio_charset_Charset);
+    *c.as_ref().unwrap().refs[0].borrow_mut() = jstr(name);
+    c
+}
+
+pub fn charset_name(this: Ref) -> JResult<Ref> {
+    Ok(nn(&this)?.refs[0].borrow().clone())
+}
+
+pub fn charset_for_name(name: Ref) -> JResult<Ref> {
+    Ok(charset(&rust_string(nn(&name)?)))
+}
+
+pub fn charset_utf8() -> JResult<Ref> {
+    Ok(charset("UTF-8"))
+}
+
+pub fn charset_ascii() -> JResult<Ref> {
+    Ok(charset("US-ASCII"))
+}
+
+pub fn charset_latin1() -> JResult<Ref> {
+    Ok(charset("ISO-8859-1"))
+}
+
+pub fn init_code_points(this: Ref, a: Ref, off: i32, n: i32) -> JResult<()> {
+    let mut out = Vec::new();
+    for i in off..off + n {
+        let c = ald_i(&a, i)?;
+        match char::from_u32(c as u32) {
+            Some(ch) => {
+                let mut buf = [0u16; 2];
+                out.extend_from_slice(ch.encode_utf16(&mut buf));
+            }
+            None => {
+                return Err(throw(
+                    &C_java_lang_IllegalArgumentException,
+                    &format!("invalid code point {c}"),
+                ));
+            }
+        }
+    }
+    set(&this, out)
+}
+
+pub fn code_point_at(this: Ref, i: i32) -> JResult<i32> {
+    crate::n::boxes::character::code_point_at(this, i)
+}
+
+pub fn code_point_count(this: Ref, begin: i32, end: i32) -> JResult<i32> {
+    let a = of(&this)?;
+    if begin < 0 || end as usize > a.len() || begin > end {
+        return Err(sioobe(begin));
+    }
+    Ok(String::from_utf16_lossy(&a[begin as usize..end as usize])
+        .chars()
+        .count() as i32)
 }

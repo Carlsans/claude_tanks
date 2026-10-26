@@ -220,13 +220,18 @@ pub fn run_until_idle(patience: Duration) {
     loop {
         let now = Instant::now();
         let mut ran = false;
-        let n = SCHED.with(|s| s.borrow().threads.len());
+        let (n, done) = SCHED.with(|s| {
+            let s = s.borrow();
+            (
+                s.threads.len(),
+                s.threads.iter().map(|t| t.done).collect::<Vec<bool>>(),
+            )
+        });
         for i in 0..n {
-            let wake = SCHED.with(|s| {
-                let s = s.borrow();
-                let done: Vec<bool> = s.threads.iter().map(|t| t.done).collect();
-                ready(&s.threads[i], now, &done)
-            });
+            if done[i] {
+                continue;
+            }
+            let wake = SCHED.with(|s| ready(&s.borrow().threads[i], now, &done));
             let Some(wake) = wake else { continue };
             ran = true;
             let mut co = SCHED
@@ -254,9 +259,8 @@ pub fn run_until_idle(patience: Duration) {
                     }
                     CoroutineResult::Return(res) => {
                         t.done = true;
-                        if let Err(e) = res
-                            && printing()
-                        {
+                        // As the JVM does, whether or not the program prints.
+                        if let Err(e) = res {
                             eprintln!("Exception in thread {}: {}", i, describe(&e));
                         }
                     }
@@ -291,4 +295,31 @@ pub fn run_main_thread(main: Box<dyn FnOnce() -> JResult<()>>) -> Option<Throw> 
     );
     run_until_idle(Duration::from_secs(3600));
     err.borrow_mut().take()
+}
+
+/// Every thread's state, for tracing.
+pub fn debug_state() -> String {
+    SCHED.with(|s| {
+        s.borrow()
+            .threads
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let name = t
+                    .obj
+                    .as_ref()
+                    .and_then(|o| o.refs[0].borrow().as_ref().map(|n| rust_string(n)))
+                    .unwrap_or_default();
+                format!(
+                    "{i}:{name}:{}",
+                    if t.done {
+                        "done".to_string()
+                    } else {
+                        format!("{:?}", t.block)
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
 }

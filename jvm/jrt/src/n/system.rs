@@ -117,3 +117,67 @@ pub fn do_privileged(action: Ref) -> JResult<Ref> {
         unsafe { std::mem::transmute(islot_by_name(o, "java/security/PrivilegedAction", 0)?) };
     f(action)
 }
+
+pub fn getenv(name: Ref) -> JResult<Ref> {
+    crate::n::net::getenv(name)
+}
+
+/// A method replaced by doing nothing (see `spec::OVERRIDES`).
+pub fn ignore_text(_this: Ref, _s: Ref) -> JResult<()> {
+    Ok(())
+}
+
+pub fn nop_this(_this: Ref) -> JResult<()> {
+    Ok(())
+}
+
+pub fn no_static() -> JResult<i32> {
+    Ok(0)
+}
+
+pub fn null_static() -> JResult<Ref> {
+    Ok(None)
+}
+
+pub fn line_separator() -> JResult<Ref> {
+    Ok(jstr("\n"))
+}
+
+fn locale(tag: &str) -> Ref {
+    let l = alloc(&C_java_util_Locale);
+    *l.as_ref().unwrap().refs[0].borrow_mut() = jstr(tag);
+    l
+}
+
+pub fn locale_en() -> JResult<Ref> {
+    Ok(locale("en"))
+}
+pub fn locale_us() -> JResult<Ref> {
+    Ok(locale("en_US"))
+}
+pub fn locale_uk() -> JResult<Ref> {
+    Ok(locale("en_GB"))
+}
+pub fn locale_root() -> JResult<Ref> {
+    Ok(locale(""))
+}
+
+pub fn locale_tag(this: Ref) -> JResult<Ref> {
+    Ok(nn(&this)?.refs[0].borrow().clone())
+}
+
+pub fn locale_country(this: Ref) -> JResult<Ref> {
+    let t = nn(&this)?.refs[0]
+        .borrow()
+        .as_ref()
+        .map_or(String::new(), |s| rust_string(s));
+    Ok(jstr(t.split_once('_').map_or("", |(_, c)| c)))
+}
+
+pub fn locale_language(this: Ref) -> JResult<Ref> {
+    let t = nn(&this)?.refs[0]
+        .borrow()
+        .as_ref()
+        .map_or(String::new(), |s| rust_string(s));
+    Ok(jstr(t.split('_').next().unwrap_or("")))
+}

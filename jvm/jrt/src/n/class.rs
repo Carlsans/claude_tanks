@@ -74,3 +74,62 @@ pub fn array_get_length(a: Ref) -> JResult<i32> {
 pub fn no_types(_this: Ref) -> JResult<Ref> {
     anewarray(&C_java_lang_Object, 0)
 }
+
+pub fn null_this(_this: Ref) -> JResult<Ref> {
+    Ok(None)
+}
+
+/// `Class.forName`: the program's classes by dotted name.
+pub fn for_name(name: Ref) -> JResult<Ref> {
+    let n = rust_string(nn(&name)?).replace('.', "/");
+    match crate::reflect::class_named(&n) {
+        Some(c) => Ok(class_object(c)),
+        None => Err(throw(
+            &C_java_lang_ClassNotFoundException,
+            &n.replace('/', "."),
+        )),
+    }
+}
+
+/// `getDeclaredConstructor(Class...)`: the no-argument constructor only.
+pub fn get_constructor(this: Ref, params: Ref) -> JResult<Ref> {
+    let c = of(&this)?;
+    if params.is_some() && alen(&params)? > 0 {
+        return Err(throw(
+            &C_java_lang_NoSuchMethodException,
+            &format!("{}.<init> with arguments", c.name),
+        ));
+    }
+    if crate::reflect::method(c, "<init>()V").is_none() {
+        return Err(throw(
+            &C_java_lang_NoSuchMethodException,
+            &format!("{}.<init>()", c.name),
+        ));
+    }
+    let k = alloc(&C_java_lang_reflect_Constructor);
+    *k.as_ref().unwrap().refs[0].borrow_mut() = this;
+    Ok(k)
+}
+
+/// `getMethod`: not modelled; callers fall back as on a missing method.
+pub fn no_method(this: Ref, name: Ref, _params: Ref) -> JResult<Ref> {
+    let c = of(&this)?;
+    let n = name.as_ref().map_or(String::new(), |n| rust_string(n));
+    Err(throw(
+        &C_java_lang_NoSuchMethodException,
+        &format!("{}.{n}", c.name.replace('/', ".")),
+    ))
+}
+
+pub fn new_instance(this: Ref) -> JResult<Ref> {
+    crate::reflect::new_instance(of(&this)?, "()V", &[])
+}
+
+pub fn constructor_new_instance(this: Ref, _args: Ref) -> JResult<Ref> {
+    let class = nn(&this)?.refs[0].borrow().clone();
+    new_instance(class)
+}
+
+pub fn nop_z(_this: Ref, _on: i32) -> JResult<()> {
+    Ok(())
+}

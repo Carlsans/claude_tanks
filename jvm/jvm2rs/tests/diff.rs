@@ -79,6 +79,7 @@ fn programs_print_what_the_jvm_prints() {
             crate_name: format!("diff_{name}"),
             jrt: jrt.clone(),
             main: Some("Main".into()),
+            robot: None,
         })
         .unwrap_or_else(|e| panic!("{name}: {e}"));
         for n in report.notes.keys() {

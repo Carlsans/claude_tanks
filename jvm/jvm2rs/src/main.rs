@@ -1,5 +1,6 @@
 //! `jvm2rs --cp <jar|dir>[:...] --out <dir> [--main <class>] [--name <crate>]
-//! [--jrt <runtime crate>] [--root <class>.<name><desc>]... [--new <class>]...`
+//! [--jrt <runtime crate>] [--root <class>.<name><desc>]... [--new <class>]...
+//! [--robot <class> <bot .json>]`
 //!
 //! Translates what is reachable from the roots (or `main`) into a Rust crate.
 use jvm2rs::world::Impl;
@@ -15,6 +16,7 @@ fn main() {
         crate_name: "translated".into(),
         jrt: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../jrt")),
         main: None,
+        robot: None,
     };
     while let Some(a) = args.next() {
         let mut val = || args.next().unwrap_or_else(|| panic!("{a} needs a value"));
@@ -25,6 +27,25 @@ fn main() {
             "--name" => opts.crate_name = val(),
             "--jrt" => opts.jrt = PathBuf::from(val()),
             "--new" => opts.instantiated.push(val().replace('.', "/")),
+            // A robot and its bot file (.json): name, version, authors.
+            "--robot" => {
+                let class = val().replace('.', "/");
+                let file = args.next().expect("--robot <class> <bot .json>");
+                let j: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&file).expect("bot file"))
+                        .expect("bot json");
+                let s = |k: &str| j[k].as_str().unwrap_or("").to_string();
+                opts.robot = Some(jvm2rs::Robot {
+                    class,
+                    name: s("name"),
+                    version: s("version"),
+                    authors: j["authors"].as_array().map_or(Vec::new(), |a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    }),
+                });
+            }
             "--root" => {
                 let v = val();
                 let i = v.find('(').expect("--root class.name(desc)ret");

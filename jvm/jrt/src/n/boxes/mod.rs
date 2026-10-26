@@ -8,6 +8,7 @@ pub mod double;
 pub mod float;
 pub mod integer;
 pub mod long;
+pub mod small;
 
 /// Number's method-table slots after Object's five.
 const INT_VALUE: usize = 5;

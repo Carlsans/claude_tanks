@@ -207,3 +207,7 @@ pub fn to_string(this: Ref) -> JResult<Ref> {
 pub fn ignore_ref(_this: Ref, _x: Ref) -> JResult<()> {
     Ok(())
 }
+
+pub fn no_stack(this: Ref) -> JResult<Ref> {
+    crate::n::throwable::no_stack(this)
+}

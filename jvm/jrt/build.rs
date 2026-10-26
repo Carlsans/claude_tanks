@@ -110,7 +110,7 @@ fn main() {
         }
         writeln!(
             out,
-            "pub static {id}: Class = Class {{ name: {:?}, sup: {}, ifaces: &[{}], interface: {}, prims: {prims}, refs: {refs}, vtable: &[{}], itable: &[{}], ext: {}, component: Component::None, values: None }};",
+            "pub static {id}: Class = Class {{ name: {:?}, sup: {}, ifaces: &[{}], interface: {}, prims: {prims}, refs: {refs}, vtable: &[{}], itable: &[{}], ext: {}, component: Component::None, values: None, fields: &[], methods: &[] }};",
             c.name,
             match c.sup.filter(|_| !c.interface) {
                 Some(s) => format!("Some(&{})", ident(s)),
@@ -128,6 +128,12 @@ fn main() {
         )
         .unwrap();
     }
+    writeln!(
+        out,
+        "/// Every native class, for lookups by name.\npub static NATIVE_CLASS_LIST: &[&Class] = &[{}];",
+        NATIVE_CLASSES.iter().map(|c| format!("&{}", ident(c.name))).collect::<Vec<_>>().join(", ")
+    )
+    .unwrap();
     let path = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("classes.rs");
     std::fs::write(path, out).unwrap();
 }

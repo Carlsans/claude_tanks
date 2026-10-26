@@ -83,3 +83,19 @@ pub fn value_of(class: Ref, name: Ref) -> JResult<Ref> {
         ),
     ))
 }
+
+pub fn java_lang_access() -> JResult<Ref> {
+    Ok(alloc(&C_jrt_JavaLangAccess))
+}
+
+/// `JavaLangAccess.getEnumConstantsShared(Class)`: the class's `values()`.
+pub fn enum_constants(_this: Ref, class: Ref) -> JResult<Ref> {
+    let c = match &nn(&class)?.ext {
+        Ext::Class(c) => *c,
+        _ => return Ok(None),
+    };
+    match c.values {
+        Some(f) => f(),
+        None => Ok(None),
+    }
+}

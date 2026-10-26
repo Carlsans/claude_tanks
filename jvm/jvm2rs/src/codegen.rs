@@ -510,19 +510,11 @@ impl MethodGen<'_> {
                         let name = self.cf.class_name(*i).unwrap_or_default();
                         match class_expr(self.world, &name) {
                             Some(c) => format!("jrt::class_object({c})"),
-                            None => {
-                                self.note(format!("class {name}"));
-                                let v = self.push(K::A);
-                                self.line(&format!("{v} = None;"));
-                                self.throw(
-                                    &format!(
-                                        "jrt::unsupported({})",
-                                        rust_str(&format!("class {name}"))
-                                    ),
-                                    pc,
-                                );
-                                return;
-                            }
+                            // A class left out still has a class object.
+                            None => format!(
+                                "jrt::class_object(jrt::missing_class({}))",
+                                rust_str(&name)
+                            ),
                         }
                     }
                     _ => {
@@ -1365,6 +1357,7 @@ fn method_fn(
     format!("{header}{body}}}\n\n")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn method_body(
     world: &mut World,
     lits: &mut Lits,
@@ -1537,7 +1530,7 @@ pub fn class_module(
     };
     writeln!(
         out,
-        "pub static CLASS: jrt::Class = jrt::Class {{\n    name: {},\n    sup: {sup},\n    ifaces: &[{}],\n    interface: {},\n    prims: {prims},\n    refs: {refs},\n    vtable: &[{}],\n    itable: &[{}],\n    ext: {},\n    component: jrt::Component::None,\n    values: {},\n}};\n",
+        "pub static CLASS: jrt::Class = jrt::Class {{\n    name: {},\n    sup: {sup},\n    ifaces: &[{}],\n    interface: {},\n    prims: {prims},\n    refs: {refs},\n    vtable: &[{}],\n    itable: &[{}],\n    ext: {},\n    component: jrt::Component::None,\n    values: {},\n    fields: &FIELDS,\n    methods: &METHODS,\n}};\n",
         rust_str(&cf.name),
         ifaces.join(", "),
         cf.is_interface(),
@@ -1649,6 +1642,124 @@ pub fn class_module(
         }
     }
     out.push_str(&extras.code);
+    out.push_str(&reflection(world, reach, &cf, layout.as_ref()));
+    out
+}
+
+/// A value of kind `k` as a `Val`, and back.
+fn to_val(k: K, e: &str) -> String {
+    match k {
+        K::I => format!("jrt::reflect::Val::I({e})"),
+        K::J => format!("jrt::reflect::Val::J({e})"),
+        K::F => format!("jrt::reflect::Val::F({e})"),
+        K::D => format!("jrt::reflect::Val::D({e})"),
+        _ => format!("jrt::reflect::Val::A({e})"),
+    }
+}
+
+fn from_val(k: K, e: &str) -> String {
+    let m = match k {
+        K::I => "i",
+        K::J => "j",
+        K::F => "f",
+        K::D => "d",
+        _ => "a",
+    };
+    format!("{e}.{m}()")
+}
+
+/// The class's field and method tables (`jrt::reflect`), with an invoker
+/// per translated method and accessors for static fields.
+fn reflection(
+    world: &mut World,
+    reach: &Reach,
+    cf: &ClassFile,
+    layout: Option<&crate::world::Layout>,
+) -> String {
+    let mut out = String::new();
+    let mut fields = Vec::new();
+    for f in &cf.fields {
+        let k = desc::kind(&f.desc);
+        let generic = rust_str(f.signature.as_deref().unwrap_or(""));
+        if f.access & access::STATIC != 0 {
+            let fname = mangle::field(&f.name, &f.desc);
+            let conv = match f.desc.as_str() {
+                "Z" | "B" | "C" | "S" | "I" => "v.i()",
+                "J" => "v.j()",
+                "F" => "v.f()",
+                "D" => "v.d()",
+                _ => "v.a()",
+            };
+            writeln!(
+                out,
+                "fn sget_{fname}() -> jrt::JResult<jrt::reflect::Val> {{\n    Ok({})\n}}\n\nfn sset_{fname}(v: jrt::reflect::Val) -> jrt::JResult<()> {{\n    ps_{fname}({conv})\n}}\n",
+                to_val(k, &format!("gs_{fname}()?"))
+            )
+            .unwrap();
+            fields.push(format!(
+                "jrt::reflect::FieldMeta {{ name: {}, desc: {}, generic: {generic}, is_static: true, index: 0, get: Some(sget_{fname}), set: Some(sset_{fname}) }}",
+                rust_str(&f.name),
+                rust_str(&f.desc)
+            ));
+        } else {
+            let index = layout
+                .and_then(|l| l.fields.get(&(f.name.clone(), f.desc.clone())))
+                .map_or(0, |(_, i)| *i);
+            fields.push(format!(
+                "jrt::reflect::FieldMeta {{ name: {}, desc: {}, generic: {generic}, is_static: false, index: {index}, get: None, set: None }}",
+                rust_str(&f.name),
+                rust_str(&f.desc)
+            ));
+        }
+    }
+    let mut methods = Vec::new();
+    for m in &cf.methods {
+        let imp = Impl {
+            class: cf.name.clone(),
+            sig: sig(&m.name, &m.desc),
+        };
+        if !reach.methods.contains(&imp) {
+            continue;
+        }
+        let is_static = m.access & access::STATIC != 0;
+        let f = mangle::method(&m.name, &m.desc);
+        let (params, ret) = desc::method(&m.desc);
+        let mut args = Vec::new();
+        let mut i = 0;
+        if !is_static {
+            args.push("a[0].a()".to_string());
+            i = 1;
+        }
+        for p in &params {
+            args.push(from_val(desc::kind(p), &format!("a[{i}]")));
+            i += 1;
+        }
+        let call = format!("{f}({})?", args.join(", "));
+        let body = match ret {
+            Some(r) => format!("Ok({})", to_val(desc::kind(r), &call)),
+            None => format!("{call};\n    Ok(jrt::reflect::Val::V)"),
+        };
+        writeln!(out, "fn inv_{f}(a: &[jrt::reflect::Val]) -> jrt::JResult<jrt::reflect::Val> {{\n    {body}\n}}\n").unwrap();
+        methods.push(format!(
+            "jrt::reflect::MethodMeta {{ sig: {}, is_static: {is_static}, call: inv_{f} }}",
+            rust_str(&imp.sig)
+        ));
+    }
+    let _ = world;
+    writeln!(
+        out,
+        "static FIELDS: [jrt::reflect::FieldMeta; {}] = [{}];",
+        fields.len(),
+        fields.join(", ")
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "static METHODS: [jrt::reflect::MethodMeta; {}] = [{}];",
+        methods.len(),
+        methods.join(", ")
+    )
+    .unwrap();
     out
 }
 
@@ -1781,7 +1892,13 @@ fn lambda_class(
                     world.resolve_method(&t.class, &tsig)
                 };
                 let (decl, info) = resolved.ok_or(format!("method {}.{tsig}", t.class))?;
-                if info.access & access::PRIVATE != 0 {
+                // Private and final methods (natives' direct ones too) have
+                // no table slot: call them directly.
+                let final_class = matches!(
+                    world.class(&decl).map(|c| &c.source),
+                    Some(crate::world::Source::Translated(cf)) if cf.access & access::FINAL != 0
+                );
+                if info.access & (access::PRIVATE | access::FINAL) != 0 || final_class {
                     let imp = Impl {
                         class: decl,
                         sig: tsig.clone(),
@@ -1930,7 +2047,7 @@ fn lambda_class(
         .collect();
     writeln!(
         out,
-        "pub static LAMBDA_{k}: jrt::Class = jrt::Class {{\n    name: {},\n    sup: Some(&jrt::C_java_lang_Object),\n    ifaces: &[{}],\n    interface: false,\n    prims: {prims},\n    refs: {refs},\n    vtable: &jrt::OBJECT_VTABLE,\n    itable: &[{}],\n    ext: None,\n    component: jrt::Component::None,\n    values: None,\n}};\n",
+        "pub static LAMBDA_{k}: jrt::Class = jrt::Class {{\n    name: {},\n    sup: Some(&jrt::C_java_lang_Object),\n    ifaces: &[{}],\n    interface: false,\n    prims: {prims},\n    refs: {refs},\n    vtable: &jrt::OBJECT_VTABLE,\n    itable: &[{}],\n    ext: None,\n    component: jrt::Component::None,\n    values: None,\n    fields: &[],\n    methods: &[],\n}};\n",
         rust_str(&format!("{owner}$$Lambda${k}")),
         if_list.join(", "),
         itable.join(", ")

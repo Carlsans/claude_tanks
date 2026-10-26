@@ -74,3 +74,36 @@ pub fn init_aioobe_index(this: Ref, i: i32) -> JResult<()> {
 pub fn init_sioobe_index(this: Ref, i: i32) -> JResult<()> {
     init_text(this, format!("String index out of range: {i}"))
 }
+
+pub fn init_msg_cause_flags(
+    this: Ref,
+    msg: Ref,
+    cause: Ref,
+    _suppression: i32,
+    _writable: i32,
+) -> JResult<()> {
+    init_msg_cause(this, msg, cause)
+}
+
+/// `AssertionError(Object)`: the object's text is the message.
+pub fn init_object(this: Ref, o: Ref) -> JResult<()> {
+    let msg = new_string(crate::n::string::value_of_any(&o)?);
+    let cause = match &o {
+        Some(x) if is_assignable(x.class, &C_java_lang_Throwable) => o.clone(),
+        _ => None,
+    };
+    init_msg_cause(this, msg, cause)
+}
+
+pub fn add_suppressed(_this: Ref, _t: Ref) -> JResult<()> {
+    Ok(())
+}
+
+pub fn no_throwables(_this: Ref) -> JResult<Ref> {
+    anewarray(&C_java_lang_Throwable, 0)
+}
+
+/// No stack traces: an empty array.
+pub fn no_stack(_this: Ref) -> JResult<Ref> {
+    anewarray(&C_java_lang_Object, 0)
+}

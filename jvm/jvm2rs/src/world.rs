@@ -88,6 +88,9 @@ impl Policy {
                 "java/util/function/",
                 "java/awt/geom/",
                 "jdk/internal/util/",
+                "java/io/",
+                "java/util/stream/",
+                "java/util/regex/",
             ]),
             classes: v(&[
                 "java/lang/Iterable",
@@ -120,12 +123,32 @@ impl Policy {
                 "java/util/SplittableRandom",
                 "java/util/Base64",
                 "java/util/HexFormat",
-                "java/util/Spliterators",
                 "java/util/StringJoiner",
-                "java/util/Tripwire",
                 "java/util/ImmutableCollections",
                 "jdk/internal/util/SystemProps",
                 "jdk/internal/util/StaticProperty",
+                "java/io/File",
+                "java/io/FileInputStream",
+                "java/io/FileOutputStream",
+                "java/io/FileReader",
+                "java/io/FileWriter",
+                "java/io/FileDescriptor",
+                "java/io/FilePermission",
+                "java/io/RandomAccessFile",
+                "java/io/Console",
+                "java/io/ObjectInputStream",
+                "java/io/ObjectOutputStream",
+                "java/io/ObjectStreamClass",
+                "java/io/ObjectStreamField",
+                "java/io/ObjectInputFilter",
+                "java/io/PrintStream",
+                "java/io/UnixFileSystem",
+                "java/io/WinNTFileSystem",
+                "java/io/FileSystem",
+                "java/io/DefaultFileSystem",
+                "java/io/ExpiringCache",
+                "java/io/DeleteOnExitHook",
+                "java/io/SerializablePermission",
             ]),
         }
     }
@@ -607,6 +630,48 @@ impl Reach {
         for (c, s) in spec::CALLBACKS {
             if world.exists(c) {
                 r.vcall(world, c, s);
+            }
+        }
+        let json: Vec<String> = world
+            .cp
+            .archive_classes()
+            .filter(|n| spec::JSON_PACKAGES.iter().any(|p| n.starts_with(p)))
+            .cloned()
+            .collect();
+        for c in json {
+            if world.exists(&c) && !world.is_interface(&c) {
+                r.instantiate(world, &c);
+                if world.declared(&c, "<init>()V").is_some_and(|m| m.concrete) {
+                    r.add(
+                        world,
+                        Impl {
+                            class: c.clone(),
+                            sig: "<init>()V".into(),
+                        },
+                    );
+                }
+            }
+        }
+        for (c, s) in spec::REFLECTED {
+            if !world.exists(c) {
+                continue;
+            }
+            if s.starts_with("<init>") {
+                r.instantiate(world, c);
+            }
+            match world.resolve_method(c, s) {
+                Some((decl, m)) if m.access & access::STATIC != 0 || s.starts_with("<init>") => {
+                    r.init(world, &decl);
+                    r.add(
+                        world,
+                        Impl {
+                            class: decl,
+                            sig: s.to_string(),
+                        },
+                    );
+                }
+                Some((decl, _)) => r.vcall(world, &decl, s),
+                None => {}
             }
         }
         for c in instantiated {

@@ -176,3 +176,51 @@ pub fn set_char_at(this: Ref, i: i32, c: i32) -> JResult<()> {
     })?;
     if ok { Ok(()) } else { Err(sioobe(i)) }
 }
+
+pub fn append_seq_range(this: Ref, s: Ref, start: i32, end: i32) -> JResult<Ref> {
+    let v = crate::n::string::seq_chars(&s)?;
+    if start < 0 || end as usize > v.len() || start > end {
+        return Err(sioobe(start));
+    }
+    push(this, &v[start as usize..end as usize])
+}
+
+pub fn append_chars_range(this: Ref, a: Ref, off: i32, n: i32) -> JResult<Ref> {
+    let v = match &nn(&a)?.ext {
+        Ext::Chars(c) => {
+            let c = c.borrow();
+            if off < 0 || n < 0 || (off + n) as usize > c.len() {
+                return Err(sioobe(off));
+            }
+            c[off as usize..(off + n) as usize].to_vec()
+        }
+        _ => panic!("not a char[]"),
+    };
+    push(this, &v)
+}
+
+pub fn index_of(this: Ref, s: Ref) -> JResult<i32> {
+    let me = with(&this, |b| b.clone())?;
+    let needle = crate::n::string::seq_chars(&s)?;
+    if needle.is_empty() {
+        return Ok(0);
+    }
+    Ok(me
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())
+        .map_or(-1, |i| i as i32))
+}
+
+pub fn append_code_point(this: Ref, c: i32) -> JResult<Ref> {
+    match char::from_u32(c as u32) {
+        Some(ch) => {
+            let mut buf = [0u16; 2];
+            let v = ch.encode_utf16(&mut buf).to_vec();
+            push(this, &v)
+        }
+        None => Err(throw(
+            &C_java_lang_IllegalArgumentException,
+            &format!("invalid code point {c}"),
+        )),
+    }
+}

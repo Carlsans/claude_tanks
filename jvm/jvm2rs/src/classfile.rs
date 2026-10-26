@@ -82,6 +82,8 @@ pub struct Field {
     pub desc: String,
     /// `ConstantValue` attribute (static finals): a pool index.
     pub constant: Option<u16>,
+    /// `Signature` attribute: the generic type (`Ljava/util/List<LFoo;>;`).
+    pub signature: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -289,15 +291,22 @@ impl ClassFile {
             let name = cf.utf8(r.u2()?)?;
             let desc = cf.utf8(r.u2()?)?;
             let mut constant = None;
+            let mut signature = None;
             for _ in 0..r.u2()? {
                 let an = cf.utf8(r.u2()?)?;
                 let len = r.u4()? as usize;
                 let body = r.bytes(len)?;
-                if an == "ConstantValue" && len >= 2 {
-                    constant = Some(u16::from(body[0]) << 8 | u16::from(body[1]));
+                if len >= 2 {
+                    let idx = u16::from(body[0]) << 8 | u16::from(body[1]);
+                    match an.as_str() {
+                        "ConstantValue" => constant = Some(idx),
+                        "Signature" => signature = cf.utf8(idx).ok(),
+                        _ => {}
+                    }
                 }
             }
             cf.fields.push(Field {
+                signature,
                 access,
                 name,
                 desc,
