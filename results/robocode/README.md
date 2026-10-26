@@ -167,6 +167,8 @@ All four runs start from RC4b latest and differ only in the memory. Each network
 
 **Why training did not find it:** after 300 generations, the weights of the ten memory inputs (which started at zero) are about 0.05 in size, the same as the random drift of every other input weight over those generations. The trained observation weights are about 0.57. No memory input stands out, so the networks barely use them yet. M0b, M2b and M3b give them 600 more generations.
 
+**600 more generations (M0b, M3b, ema networks):** M0b ema wins 52.9% of rounds (100 robots: 20 battles failed to start while the machine ran out of memory), +0.2 ± 1.3 points per robot over M0 ema; M3b ema wins 52.9% (120 robots), +0.5 ± 1.1. Both fight about 15 units farther away, a little more so against evasive robots, so still no charging. M2b and the best and latest networks of these runs are not surveyed yet.
+
 ## Verdicts
 
 - **RC1: confirmed.** Within 8 minutes the day champion went from 65% to 95–99% against the ports. The skill carries over to the real bots, including the five it never met: 88–96% of rounds.
@@ -182,7 +184,7 @@ All four runs start from RC4b latest and differ only in the memory. Each network
 - **M1 (state kept between rounds): refuted, worse.** All three M1 networks lose 3 to 4 points of rounds per robot against M0 (about 3 standard errors each) and 2 to 3 points of score share. 300 generations were not enough to unlearn starting each round fresh, or carrying the end of one round (often a dead enemy) into the next misleads the network.
 - **M2 (battle-memory inputs): no difference.** Within ±1 point of M0 on every network. It learned to keep farther away (304 instead of 275 units), which lowers both hit rates, but not to choose its distance by opponent.
 - **M3 (both): no clear difference.** M3 best has the most rounds won (52.8%) and score share (54.5%) of all networks, +1.2 ± 0.6 points of score share against M0 best. But among the nine comparisons with M0, one at two standard errors is what chance gives. M3 latest and ema are level with M0. Unlike M1, keeping the state does not hurt here.
-- **Charging did not emerge.** No memory network fights closer against weak or evasive robots, and the memory weights are still at noise level. M0b, M2b and M3b (running) train three times longer.
-- **No new champion yet.** M0 ema, M3 best and the other top networks win 51–53% of rounds against 41.5% for the Robocode champion, but none clearly beats the others. The choice waits for M0b–M3b.
+- **Charging did not emerge.** No memory network fights closer against weak or evasive robots, and the memory weights are still at noise level. Three times longer training (M0b, M3b) changed neither.
+- **No new champion yet.** M0 ema, M3 best and the other top networks win 51–53% of rounds against 41.5% for the Robocode champion, but none clearly beats the others. M0b ema and M3b ema (52.9%) are level with them too: against the Java robots, training has plateaued around 52–53% of rounds.
 
 Every RC network is in [`models/robocode/`](../../models/robocode).
