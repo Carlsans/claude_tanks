@@ -343,6 +343,74 @@ fn gru_mem_starts_as_the_gru_it_copies() {
 }
 
 #[test]
+fn mixture_of_one_gru_plays_like_it() {
+    use claude_tanks::nn::Arch;
+    use claude_tanks::nn::fixed::{FixedNet, init_params, transplant};
+    use claude_tanks::rng::Rng;
+    use claude_tanks::royale::memory::N_MEM;
+    use claude_tanks::sim::sensors::N_OBS;
+    let mut rng = Rng::new(4);
+    let p = init_params(Arch::Gru, &mut rng);
+    let q = transplant(Arch::Gru, &p, Arch::Moe, &mut rng).expect("transplant");
+    assert_eq!(q.len(), Arch::Moe.param_count());
+    let (mut a, mut b) = (FixedNet::new(Arch::Gru, p), FixedNet::new(Arch::Moe, q));
+    for _ in 0..20 {
+        let x: Vec<f32> = (0..N_OBS + N_MEM).map(|_| rng.gauss()).collect();
+        let (ya, yb) = (a.forward(&x[..N_OBS]), b.forward(&x));
+        assert!(
+            ya.iter().zip(&yb).all(|(u, v)| (u - v).abs() < 1e-5),
+            "{ya:?} {yb:?}"
+        );
+    }
+    assert_eq!(b.gate(), Some([0.5, 0.5]));
+    assert_eq!(a.gate(), None);
+}
+
+#[test]
+fn mixture_gate_follows_the_battle_memory() {
+    use claude_tanks::nn::Arch;
+    use claude_tanks::nn::fixed::{EXPERTS, FixedNet, Layout, init_params, mixture};
+    use claude_tanks::rng::Rng;
+    use claude_tanks::royale::memory::N_MEM;
+    use claude_tanks::sim::sensors::N_OBS;
+    let mut rng = Rng::new(5);
+    let (pa, pb) = (
+        init_params(Arch::Gru, &mut rng),
+        init_params(Arch::GruMem, &mut rng),
+    );
+    let mut q = mixture(
+        &[(Arch::Gru, &pa), (Arch::GruMem, &pb)],
+        [0.0; EXPERTS],
+        &mut rng,
+    )
+    .expect("mixture");
+    // The gate turns to expert 2 when the first memory input is high.
+    let Layout::Moe { gw, .. } = Layout::new(Arch::Moe).0 else {
+        unreachable!()
+    };
+    q[gw + N_MEM] = 30.0;
+    let mut moe = FixedNet::new(Arch::Moe, q);
+    let (mut a, mut b) = (
+        FixedNet::new(Arch::Gru, pa),
+        FixedNet::new(Arch::GruMem, pb),
+    );
+    for step in 0..10 {
+        let mut x: Vec<f32> = (0..N_OBS + N_MEM).map(|_| rng.gauss()).collect();
+        x[N_OBS] = if step < 5 { 0.0 } else { 1.0 };
+        let (ya, yb, y) = (a.forward(&x[..N_OBS]), b.forward(&x), moe.forward(&x));
+        let want: Vec<f32> = if step < 5 {
+            ya.iter().zip(&yb).map(|(u, v)| (u + v) / 2.0).collect()
+        } else {
+            yb.to_vec()
+        };
+        assert!(
+            y.iter().zip(&want).all(|(u, v)| (u - v).abs() < 1e-5),
+            "step {step}: {y:?} {want:?}"
+        );
+    }
+}
+
+#[test]
 fn keep_state_carries_the_network_over_rounds() {
     use claude_tanks::nn::fixed::init_params;
     use claude_tanks::nn::{Arch, Brain, Genes};

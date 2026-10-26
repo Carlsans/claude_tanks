@@ -95,7 +95,7 @@ fn check_child(arg: &str) -> Result<(), String> {
 
 /// Whether the GPU kernels cover this architecture.
 pub fn supports(arch: Arch) -> bool {
-    !matches!(arch, Arch::Neat | Arch::GruClock | Arch::GruMem)
+    !matches!(arch, Arch::Neat | Arch::GruClock | Arch::GruMem | Arch::Moe)
 }
 
 /// Status without setting the GPU up (cheap enough for every frame).
@@ -260,7 +260,9 @@ impl Gpu {
                 mats.push((*wo, N_OUT, h));
                 &self.gru
             }
-            Layout::GruClock { .. } => unreachable!("no GPU kernel for {arch:?}"),
+            Layout::GruClock { .. } | Layout::Moe { .. } => {
+                unreachable!("no GPU kernel for {arch:?}")
+            }
         };
         let mut data = Vec::with_capacity(n * sets.len());
         for s in sets {

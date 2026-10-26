@@ -5,8 +5,10 @@
 //! whether it connected, then from the bot's side the rounds `won` and `lost`
 //! and the damage dealt and taken, and its speed; then `round_seq`, the bot's
 //! result round by round (W, L or D), and what our network did: its shots and
-//! hits, the enemy's shots seen and hits, and how close it fought. Bots already
-//! in the file are skipped, so an interrupted survey resumes.
+//! hits, the enemy's shots seen and hits, and how close it fought, overall and
+//! from round 16 on (`late_distance`). For a mixture of experts, `expert2` is
+//! the gate's mean weight on the second expert (`late_expert2` from round 16
+//! on). Bots already in the file are skipped, so an interrupted survey resumes.
 //!
 //! Some robots save what they learned about an opponent in files named after
 //! it, and read them in later battles. So that every survey meets robots that
@@ -138,6 +140,15 @@ fn survey(bot: &BotDir, model: &ModelFile, name: &str, rounds: u32) -> serde_jso
             if r.seen_turns > 0 {
                 rec["mean_distance"] = (r.distance / r.seen_turns as f64).into();
                 rec["close_share"] = (r.close_turns as f64 / r.seen_turns as f64).into();
+            }
+            if r.late_seen_turns > 0 {
+                rec["late_distance"] = (r.late_distance / r.late_seen_turns as f64).into();
+            }
+            if r.gate_turns > 0 {
+                rec["expert2"] = (r.gate / r.gate_turns as f64).into();
+            }
+            if r.late_gate_turns > 0 {
+                rec["late_expert2"] = (r.late_gate / r.late_gate_turns as f64).into();
             }
             rec
         }

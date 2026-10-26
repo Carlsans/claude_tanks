@@ -7,6 +7,10 @@ use crate::sim::world::Action;
 
 pub const N_IN: usize = N_OBS;
 pub const N_OUT: usize = Action::OUTPUTS;
+/// Experts in `Arch::Moe`.
+pub const EXPERTS: usize = 2;
+/// Battle-memory inputs, which the gate of `Arch::Moe` reads.
+const N_MEM: usize = crate::royale::memory::N_MEM;
 
 /// Offsets of each weight block inside the flat parameter vector.
 #[derive(Clone, Debug)]
@@ -51,6 +55,15 @@ pub enum Layout {
         wo: usize,
         ws: usize,
         bo: usize,
+    },
+    /// `EXPERTS` networks laid out as `expert` (`size` parameters each, one
+    /// after the other from 0), then the gate over the battle memory
+    /// (`EXPERTS x N_MEM` weights at `gw`, biases at `gb`).
+    Moe {
+        expert: Box<Layout>,
+        size: usize,
+        gw: usize,
+        gb: usize,
     },
 }
 
@@ -129,6 +142,16 @@ impl Layout {
                     bo: take(N_OUT),
                 }
             }
+            Arch::Moe => {
+                let (expert, size) = Layout::new(Arch::GruMem);
+                take(EXPERTS * size);
+                Layout::Moe {
+                    expert: Box::new(expert),
+                    size,
+                    gw: take(EXPERTS * N_MEM),
+                    gb: take(EXPERTS),
+                }
+            }
             Arch::Neat => panic!("NEAT has no fixed layout"),
         };
         (layout, n)
@@ -154,6 +177,7 @@ impl Layout {
             Layout::Mlp(_) => 0,
             Layout::Elman { h, .. } | Layout::Gru { h, .. } => *h,
             Layout::GruClock { h, k, .. } => h + k,
+            Layout::Moe { expert, .. } => EXPERTS * expert.hidden(),
         }
     }
 }
@@ -211,8 +235,40 @@ pub fn init_params(arch: Arch, rng: &mut Rng) -> Vec<f32> {
             fill(*wo, N_OUT, h + k);
             fill(*ws, N_OUT, N_IN);
         }
+        // Random experts; the gate starts even.
+        Layout::Moe { size, .. } => {
+            for e in 0..EXPERTS {
+                p[e * size..(e + 1) * size].copy_from_slice(&init_params(Arch::GruMem, rng));
+            }
+        }
     }
     p
+}
+
+/// A mixture of experts (`Arch::Moe`) made of trained networks: one GRU-32
+/// or GRU + battle memory per expert. The gate starts with `bias` (one per
+/// expert) and no weight on the battle memory.
+pub fn mixture(
+    experts: &[(Arch, &[f32])],
+    bias: [f32; EXPERTS],
+    rng: &mut Rng,
+) -> Option<Vec<f32>> {
+    let Layout::Moe { size, gb, .. } = Layout::new(Arch::Moe).0 else {
+        unreachable!()
+    };
+    if experts.len() != EXPERTS {
+        return None;
+    }
+    let mut q = vec![0.0; Arch::Moe.param_count()];
+    for (e, &(arch, p)) in experts.iter().enumerate() {
+        let p = match arch {
+            Arch::GruMem if p.len() == size => p.to_vec(),
+            _ => transplant(arch, p, Arch::GruMem, rng)?,
+        };
+        q[e * size..(e + 1) * size].copy_from_slice(&p);
+    }
+    q[gb..gb + EXPERTS].copy_from_slice(&bias);
+    Some(q)
 }
 
 /// Copies a trained GRU into the GRU + clocks architecture of the same size.
@@ -221,8 +277,13 @@ pub fn init_params(arch: Arch, rng: &mut Rng) -> Vec<f32> {
 /// writers get random weights, so the clocks already tick.
 ///
 /// A GRU-32 copied into `Arch::GruMem` also computes the same outputs: the
-/// weights on the battle-memory inputs start at zero.
+/// weights on the battle-memory inputs start at zero. Copied into
+/// `Arch::Moe`, it becomes every expert, so the mixture computes the same
+/// outputs as well.
 pub fn transplant(from: Arch, p: &[f32], to: Arch, rng: &mut Rng) -> Option<Vec<f32>> {
+    if to == Arch::Moe && matches!(from, Arch::Gru | Arch::GruMem) {
+        return mixture(&[(from, p); EXPERTS], [0.0; EXPERTS], rng);
+    }
     if from == Arch::Gru && to == Arch::GruMem && p.len() == from.param_count() {
         let (
             Layout::Gru { h, wx, wh, .. },
@@ -334,6 +395,8 @@ pub struct FixedNet {
     h: Vec<f32>,
     /// Clock decays (GRU + clocks only).
     decay: Vec<f32>,
+    /// The gate's last weights (mixture of experts only).
+    gate: [f32; EXPERTS],
     buf: Vec<Vec<f32>>,
 }
 
@@ -352,6 +415,7 @@ impl FixedNet {
             layout,
             h,
             decay,
+            gate: [1.0 / EXPERTS as f32; EXPERTS],
             buf: vec![Vec::new(); 6],
         }
     }
@@ -402,51 +466,38 @@ impl FixedNet {
                 matvec_add(&p[*wo..*wo + N_OUT * h], &self.h, &mut out);
                 out.iter_mut().for_each(|v| *v = v.tanh());
             }
-            Layout::Gru {
-                h,
-                n_in,
-                wx,
-                wh,
-                b,
-                wo,
-                bo,
+            Layout::Gru { .. } => out = gru_forward(&self.layout, p, &mut self.h, x, &mut self.buf),
+            Layout::Moe {
+                expert,
+                size,
+                gw,
+                gb,
             } => {
-                let (h, n_in) = (*h, *n_in);
-                let [z, r, n, rh, u, ..] = &mut self.buf[..] else {
-                    unreachable!()
-                };
-                // Inputs it does not get (the battle memory outside Robocode
-                // battles) stay at zero.
-                let x = if x.len() == n_in {
-                    x
-                } else {
-                    u.clear();
-                    u.extend(x.iter().copied().chain(std::iter::repeat(0.0)).take(n_in));
-                    &u[..]
-                };
-                z.clear();
-                z.extend_from_slice(&p[b[0]..b[0] + h]);
-                r.clear();
-                r.extend_from_slice(&p[b[1]..b[1] + h]);
-                n.clear();
-                n.extend_from_slice(&p[b[2]..b[2] + h]);
-                matvec_add(&p[wx[0]..wx[0] + h * n_in], x, z);
-                matvec_add(&p[wh[0]..wh[0] + h * h], &self.h, z);
-                matvec_add(&p[wx[1]..wx[1] + h * n_in], x, r);
-                matvec_add(&p[wh[1]..wh[1] + h * h], &self.h, r);
-                z.iter_mut().for_each(|v| *v = sigmoid(*v));
-                r.iter_mut().for_each(|v| *v = sigmoid(*v));
-                rh.clear();
-                rh.extend(r.iter().zip(&self.h).map(|(a, b)| a * b));
-                matvec_add(&p[wx[2]..wx[2] + h * n_in], x, n);
-                matvec_add(&p[wh[2]..wh[2] + h * h], rh, n);
-                for j in 0..h {
-                    let nv = n[j].tanh();
-                    self.h[j] = (1.0 - z[j]) * nv + z[j] * self.h[j];
+                // The gate reads the battle memory (zeros outside Robocode
+                // battles) and weighs the experts by a softmax.
+                let mut m = [0.0f32; N_MEM];
+                m.iter_mut()
+                    .zip(x.iter().skip(N_IN))
+                    .for_each(|(a, b)| *a = *b);
+                let mut g = [0.0f32; EXPERTS];
+                g.copy_from_slice(&p[*gb..*gb + EXPERTS]);
+                matvec_add(&p[*gw..*gw + EXPERTS * N_MEM], &m, &mut g);
+                let top = g.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                g.iter_mut().for_each(|v| *v = (*v - top).exp());
+                let sum: f32 = g.iter().sum();
+                g.iter_mut().for_each(|v| *v /= sum);
+                self.gate = g;
+                let hn = expert.hidden();
+                for (e, (ge, state)) in g.iter().zip(self.h.chunks_mut(hn)).enumerate() {
+                    let o = gru_forward(
+                        expert,
+                        &p[e * size..(e + 1) * size],
+                        state,
+                        x,
+                        &mut self.buf,
+                    );
+                    out.iter_mut().zip(o).for_each(|(a, b)| *a += ge * b);
                 }
-                out.copy_from_slice(&p[*bo..*bo + N_OUT]);
-                matvec_add(&p[*wo..*wo + N_OUT * h], &self.h, &mut out);
-                out.iter_mut().for_each(|v| *v = v.tanh());
             }
             Layout::GruClock {
                 h,
@@ -508,4 +559,71 @@ impl FixedNet {
         }
         out
     }
+
+    /// Mixture of experts: the weight the gate gave each expert at the last
+    /// step.
+    pub fn gate(&self) -> Option<[f32; EXPERTS]> {
+        matches!(self.layout, Layout::Moe { .. }).then_some(self.gate)
+    }
+}
+
+/// One step of a `Layout::Gru` network with parameters `p` and state `hs`;
+/// returns tanh outputs.
+fn gru_forward(
+    layout: &Layout,
+    p: &[f32],
+    hs: &mut [f32],
+    x: &[f32],
+    buf: &mut [Vec<f32>],
+) -> [f32; N_OUT] {
+    let Layout::Gru {
+        h,
+        n_in,
+        wx,
+        wh,
+        b,
+        wo,
+        bo,
+    } = layout
+    else {
+        unreachable!("not a GRU layout")
+    };
+    let (h, n_in) = (*h, *n_in);
+    let [z, r, n, rh, u, ..] = buf else {
+        unreachable!()
+    };
+    // Inputs it does not get (the battle memory outside Robocode battles)
+    // stay at zero.
+    let x = if x.len() == n_in {
+        x
+    } else {
+        u.clear();
+        u.extend(x.iter().copied().chain(std::iter::repeat(0.0)).take(n_in));
+        &u[..]
+    };
+    z.clear();
+    z.extend_from_slice(&p[b[0]..b[0] + h]);
+    r.clear();
+    r.extend_from_slice(&p[b[1]..b[1] + h]);
+    n.clear();
+    n.extend_from_slice(&p[b[2]..b[2] + h]);
+    matvec_add(&p[wx[0]..wx[0] + h * n_in], x, z);
+    matvec_add(&p[wh[0]..wh[0] + h * h], hs, z);
+    matvec_add(&p[wx[1]..wx[1] + h * n_in], x, r);
+    matvec_add(&p[wh[1]..wh[1] + h * h], hs, r);
+    z.iter_mut().for_each(|v| *v = sigmoid(*v));
+    r.iter_mut().for_each(|v| *v = sigmoid(*v));
+    rh.clear();
+    rh.extend(r.iter().zip(hs.iter()).map(|(a, b)| a * b));
+    matvec_add(&p[wx[2]..wx[2] + h * n_in], x, n);
+    matvec_add(&p[wh[2]..wh[2] + h * h], rh, n);
+    for j in 0..h {
+        let nv = n[j].tanh();
+        hs[j] = (1.0 - z[j]) * nv + z[j] * hs[j];
+    }
+    let mut out = [0.0f32; N_OUT];
+    out.copy_from_slice(&p[*bo..*bo + N_OUT]);
+    matvec_add(&p[*wo..*wo + N_OUT * h], hs, &mut out);
+    out.iter_mut().for_each(|v| *v = v.tanh());
+    out
 }

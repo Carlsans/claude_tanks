@@ -50,10 +50,21 @@ pub struct PilotReport {
     pub distance: f64,
     pub seen_turns: u32,
     pub close_turns: u32,
+    /// The same from round `LATE + 1` on, once the battle memory has filled.
+    pub late_distance: f64,
+    pub late_seen_turns: u32,
+    /// Mixture of experts: the weight the gate gave the second expert,
+    /// summed over turns, overall and from round `LATE + 1` on.
+    pub gate: f64,
+    pub gate_turns: u32,
+    pub late_gate: f64,
+    pub late_gate_turns: u32,
 }
 
 /// Distance (pixels) under which a turn counts as close combat.
 pub const CLOSE: f64 = 150.0;
+/// Rounds after which `PilotReport` also counts the late part of a battle.
+pub const LATE: u32 = 15;
 
 /// Turns our pilots' observations and outputs into Tank Royale terms.
 pub struct Adapter {
@@ -279,9 +290,24 @@ impl Pilot for Adapter {
                 r.distance += d;
                 r.seen_turns += 1;
                 r.close_turns += u32::from(d < CLOSE);
+                if m.rounds >= LATE {
+                    r.late_distance += d;
+                    r.late_seen_turns += 1;
+                }
             }
         }
         let out = self.outputs(&o, v);
+        if let (Some(r), Driver::Net(b)) = (&self.report, &self.driver)
+            && let Some(g) = b.gate()
+        {
+            let mut r = r.lock().unwrap();
+            r.gate += g[1] as f64;
+            r.gate_turns += 1;
+            if self.memory.rounds >= LATE {
+                r.late_gate += g[1] as f64;
+                r.late_gate_turns += 1;
+            }
+        }
         let c = |x: f32| x.clamp(-1.0, 1.0) as f64;
         Intent {
             target_speed: MAX_SPEED * c(out[0]),

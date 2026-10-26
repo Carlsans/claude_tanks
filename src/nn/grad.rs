@@ -275,6 +275,7 @@ pub fn seq_forward(
             }
             (outs, SeqCache::Gru(cache))
         }
+        Layout::Moe { .. } => unreachable!("no gradients for the mixture of experts"),
         Layout::GruClock {
             h,
             k,

@@ -800,14 +800,18 @@ fn run(cfg: TrainConfig, resume: Option<RunState>, cmd: Receiver<Cmd>, tx: &Send
                 }));
             }
             let init = from_model.or_else(|| {
-                (cfg.imitation.enabled && cfg.arch != Arch::Neat && cfg.rules == Rules::Tanks).then(
-                    || {
+                // Imitation trains on the observations alone, so it cannot
+                // lay out the weights of networks that read the battle memory.
+                (cfg.imitation.enabled
+                    && cfg.arch != Arch::Neat
+                    && cfg.arch.memory_inputs() == 0
+                    && cfg.rules == Rules::Tanks)
+                    .then(|| {
                         let _ = tx.send(Msg::Log("Imitation warm start...".into()));
                         imitation::pretrain_cached(cfg.arch, &cfg.imitation, &mut rng, &|l| {
                             let _ = tx.send(Msg::Log(l));
                         })
-                    },
-                )
+                    })
             });
             let trainer = Trainer::new(&cfg, &mut rng, init);
             let level = cfg.start_level.min(cfg.top_level.min(MAX_LEVEL));

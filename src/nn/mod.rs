@@ -30,10 +30,14 @@ pub enum Arch {
     /// the rounds, hit rates, where bullets find each side; see
     /// `royale::memory`). Elsewhere those inputs stay at zero.
     GruMem,
+    /// Mixture of experts: two `GruMem` networks and a gate that reads the
+    /// battle memory and weighs their outputs, so that what the battle has
+    /// shown of the opponent can pick the expert.
+    Moe,
 }
 
 impl Arch {
-    pub const ALL: [Arch; 8] = [
+    pub const ALL: [Arch; 9] = [
         Arch::MlpS,
         Arch::MlpL,
         Arch::Elman,
@@ -42,6 +46,7 @@ impl Arch {
         Arch::GruClock,
         Arch::Neat,
         Arch::GruMem,
+        Arch::Moe,
     ];
     pub const FIXED: [Arch; 6] = [
         Arch::MlpS,
@@ -62,6 +67,7 @@ impl Arch {
             Arch::GruClock => "GRU + clocks (32+16)",
             Arch::Neat => "NEAT",
             Arch::GruMem => "GRU + battle memory (32)",
+            Arch::Moe => "Mixture of 2 experts (GRU + battle memory)",
         }
     }
 
@@ -75,6 +81,7 @@ impl Arch {
             Arch::GruClock => "gru_clock",
             Arch::Neat => "neat",
             Arch::GruMem => "gru_mem",
+            Arch::Moe => "moe",
         }
     }
 
@@ -92,7 +99,7 @@ impl Arch {
     /// Battle-memory inputs read after the usual observations.
     pub fn memory_inputs(self) -> usize {
         match self {
-            Arch::GruMem => crate::royale::memory::N_MEM,
+            Arch::GruMem | Arch::Moe => crate::royale::memory::N_MEM,
             _ => 0,
         }
     }
@@ -165,6 +172,15 @@ impl Brain {
         match self {
             Brain::Fixed(n) => n.arch.memory_inputs(),
             Brain::Neat(_) => 0,
+        }
+    }
+
+    /// Mixture of experts: the weight the gate gave each expert at the last
+    /// step.
+    pub fn gate(&self) -> Option<[f32; fixed::EXPERTS]> {
+        match self {
+            Brain::Fixed(n) => n.gate(),
+            Brain::Neat(_) => None,
         }
     }
 
