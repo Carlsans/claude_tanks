@@ -188,3 +188,5 @@ All four runs start from RC4b latest and differ only in the memory. Each network
 - **No new champion yet.** M0 ema, M3 best and the other top networks win 51–53% of rounds against 41.5% for the Robocode champion, but none clearly beats the others. M0b ema and M3b ema (52.9%) are level with them too: against the Java robots, training has plateaued around 52–53% of rounds.
 
 Every RC network is in [`models/robocode/`](../../models/robocode).
+
+**Robots translated to Rust, for training:** `rs_robots.json` lists them by folder name: `use` (1038 that run properly and need under 0.8 ms per turn over 10 rounds), `too_slow` (37, with their ms per turn), `timeouts` (111, miss most turns), `no_connect` (17) and two that do not build. Training (T1 GRU, T2 GRU with battle memory, T3 mixture of experts, from the M0b/M3b/MoE models) uses the 677 of the 787 training robots that are in `use`; the 120 test robots are not in it.
