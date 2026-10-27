@@ -3,7 +3,7 @@
 
 use super::eval::{eval_members, robot_extra};
 use super::{StepEnv, StepReport, TrainConfig};
-use crate::nn::{Genes, fixed};
+use crate::nn::{Arch, Genes, fixed};
 use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -11,6 +11,9 @@ pub struct EsParams {
     pub sigma: f32,
     pub lr: f32,
     pub weight_decay: f32,
+    /// Mixture of experts only: train just the gate, keeping both experts as they are.
+    #[serde(default)]
+    pub gate_only: bool,
 }
 
 impl Default for EsParams {
@@ -19,6 +22,7 @@ impl Default for EsParams {
             sigma: 0.01,
             lr: 0.003,
             weight_decay: 0.002,
+            gate_only: false,
         }
     }
 }
@@ -48,8 +52,23 @@ impl Es {
         let pairs = (env.cfg.population / 2).max(1);
         let n = self.theta.len();
         let rng = &mut *env.rng;
+        // The parameters being trained: all of them, or the gate of a mixture of experts.
+        let live = if p.gate_only {
+            match fixed::Layout::new(Arch::Moe).0 {
+                fixed::Layout::Moe { gw, gb, .. } if n == Arch::Moe.param_count() => {
+                    gw..gb + fixed::EXPERTS
+                }
+                _ => panic!("es.gate_only needs a mixture of experts"),
+            }
+        } else {
+            0..n
+        };
         let noise: Vec<Vec<f32>> = (0..pairs)
-            .map(|_| (0..n).map(|_| rng.gauss()).collect())
+            .map(|_| {
+                (0..n)
+                    .map(|i| if live.contains(&i) { rng.gauss() } else { 0.0 })
+                    .collect()
+            })
             .collect();
         let theta = &self.theta;
         let member = |i: usize| -> Vec<f32> {
@@ -83,7 +102,7 @@ impl Es {
         let (b1, b2) = (0.9f32, 0.999f32);
         let c1 = 1.0 - b1.powi(self.t as i32);
         let c2 = 1.0 - b2.powi(self.t as i32);
-        for i in 0..n {
+        for i in live {
             let gi = -g[i] * scale + p.weight_decay * self.theta[i];
             self.m[i] = b1 * self.m[i] + (1.0 - b1) * gi;
             self.v[i] = b2 * self.v[i] + (1.0 - b2) * gi * gi;
